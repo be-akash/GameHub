@@ -1,59 +1,40 @@
-# render.yaml — Render Blueprint for GameHub (server + web + redis)
 services:
+  # --- Redis instance ---
   - type: redis
-    name: dd-redis
-    ipAllowList: []
-    plan: free
+    name: gamehub-redis
+    ipAllowList: []  # accessible only to linked services
 
+  # --- Fastify + Socket.IO server ---
   - type: web
-    name: dd-api
+    name: gamehub-api
     env: node
     plan: free
-    region: frankfurt
-    runtime: node
-    rootDir: apps/server
-    buildCommand: |
-      corepack enable
-      pnpm i --frozen-lockfile
-      pnpm build
-    startCommand: node dist/index.js
+    buildCommand: >
+      pnpm install --frozen-lockfile &&
+      pnpm --filter @dashanddots/server build
+    startCommand: pnpm --filter @dashanddots/server start
     autoDeploy: true
-    healthCheckPath: /health
     envVars:
-      - key: PORT
-        value: "10000"
-      - key: CORS_ORIGIN
-        fromService:
-          name: dd-web
-          type: web
-          property: url
       - key: REDIS_URL
         fromService:
-          name: dd-redis
           type: redis
+          name: gamehub-redis
           property: connectionString
+      - key: CORS_ORIGIN
+        value: https://gamehub-web.onrender.com
 
+  # --- Next.js frontend ---
   - type: web
-    name: dd-web
+    name: gamehub-web
     env: node
     plan: free
-    region: frankfurt
-    runtime: node
-    rootDir: apps/web
-    buildCommand: |
-      corepack enable
-      pnpm i --frozen-lockfile
-      pnpm build
-    startCommand: pnpm start
+    buildCommand: >
+      pnpm install --frozen-lockfile &&
+      pnpm --filter @dashanddots/web build
+    startCommand: pnpm --filter @dashanddots/web start
     autoDeploy: true
     envVars:
       - key: NEXT_PUBLIC_API_URL
-        fromService:
-          name: dd-api
-          type: web
-          property: url
+        value: https://gamehub-api.onrender.com
       - key: NEXT_PUBLIC_WS_URL
-        fromService:
-          name: dd-api
-          type: web
-          property: url
+        value: https://gamehub-api.onrender.com
