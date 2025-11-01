@@ -1,0 +1,26 @@
+{$CADDY_DOMAIN} {
+  encode gzip
+
+  @api path /api*  /rooms*  /games*  /health
+  handle @api {
+    reverse_proxy api:4002
+  }
+
+  # Socket.IO (websocket upgrade)
+  @socket path /socket.io*
+  handle @socket {
+    reverse_proxy ws:4001
+  }
+
+  # everything else -> Next.js
+  handle {
+    reverse_proxy web:3000
+  }
+
+  log {
+    output stdout
+    format single_field common_log
+  }
+
+  tls {$EMAIL}
+}

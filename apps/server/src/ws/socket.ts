@@ -10,6 +10,18 @@ export let ioRef: IOServer | null = null; // exported handle for routes as fallb
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 const roomKey = (id: string) => `room:${id}:state`;
 
+const rate = new Map<string, { chat: { tokens: number, last: number }, move: { tokens: number, last: number } }>();
+const refill = (b: { tokens: number, last: number }, rps: number, cap: number) => {
+  const now = Date.now();
+  const delta = (now - b.last) / 1000;
+  b.tokens = Math.min(cap, b.tokens + delta * rps);
+  b.last = now;
+};
+const take = (b: { tokens: number, last: number }, cost = 1) => {
+  if (b.tokens >= cost) { b.tokens -= cost; return true; }
+  return false;
+};
+
 type RoomState = {
   gameId: string;
   players: string[];
@@ -29,6 +41,7 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
   if (fastifyApp) fastifyApp.io = io; // <-- make available to routes
 
   io.on("connection", (socket) => {
+    rate.set(socket.id, { chat: { tokens: 5, last: Date.now() }, move: { tokens: 5, last: Date.now() } });
     // JOIN with ack so we can reject if locked
     socket.on(
       "room.join",
@@ -66,6 +79,7 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
         if (!room.players.includes(playerId)) {
           room.players.push(playerId);
           await redis.set(roomKey(roomId), JSON.stringify(room));
+          await redis.expire(roomKey(roomId), 60 * 60 * 24);
         }
 
         socket.emit("game.state", room.state);
@@ -83,6 +97,10 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
         payload: any,
         ack?: (resp: { ok?: true; error?: string }) => void
       ) => {
+
+        const b = rate.get(socket.id)!;
+        refill(b.move, 2, 4);
+        if (!take(b.move, 1)) return ack?.({ error: "Slow down (moves)" });
         // helper so we never forget to respond
         const respond = (r: { ok?: true; error?: string }) => {
           try { ack?.(r); } catch { }
@@ -110,6 +128,7 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
           cur.state = applied.state;
 
           await redis.set(roomKey(roomId), JSON.stringify(cur));
+          await redis.expire(roomKey(roomId), 60 * 60 * 24);
 
           // broadcast new state/events
           io.to(roomId).emit("game.state", cur.state);
@@ -131,6 +150,9 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
         { text, roomId: rid }: { text: string; roomId?: string },
         ack?: (resp: { ok?: true; error?: string }) => void
       ) => {
+        const b = rate.get(socket.id)!;
+        refill(b.chat, 2, 5);
+        if (!take(b.chat, 1)) return ack?.({ error: "Slow down (chat)" });
         const roomId = (rid || socket.data.roomId || "").trim();
         const from = (socket.data?.playerId || "anon").toString();
         const t = String(text ?? "").trim();
@@ -151,6 +173,7 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
         return ack?.({ ok: true });
       }
     );
+    socket.on("disconnect", () => rate.delete(socket.id));
 
     socket.on("disconnect", () => {
       const { roomId, playerId } = socket.data || {};

@@ -49,6 +49,7 @@ export async function registerRoutes(app: FastifyInstance, io: IOServer) {
     const room = { gameId, players, state: initial, meta };
 
     await redis.set(roomKey(roomId), JSON.stringify(room));
+    await redis.expire(roomKey(roomId), 60 * 60 * 24);
 
     // ✅ Send meta info back (optional)
     return reply.send({ roomId, gameId });

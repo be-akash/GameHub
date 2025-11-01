@@ -6,8 +6,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import DotsBoard from "../components/DotsBoard";
 import Toast from "../components/Toast";
 
-const API_URL = "http://localhost:4002";
-const WS_URL = "http://localhost:4001";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
+const WS_URL  = process.env.NEXT_PUBLIC_WS_URL  || "http://localhost:4001";
 
 /** Winner overlay */
 function WinnerModal({

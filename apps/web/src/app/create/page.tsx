@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Toast from "../components/Toast";
 
-const API_URL = "http://localhost:4002";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
 
 export default function CreatePage() {
   const router = useRouter();
