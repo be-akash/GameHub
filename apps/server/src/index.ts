@@ -1,10 +1,34 @@
 import Fastify from "fastify";
+import cors from "@fastify/cors";
+import { createServer } from "http";
+import { registerRoutes } from "./http/routes";
+import { attachSocket } from "./ws/socket";
 
-const app = Fastify({ logger: true });
+async function start() {
+  const app = Fastify({ logger: true });
 
-app.get("/health", async () => ({ ok: true }));
+  await app.register(cors, {
+    origin: (origin, cb) => cb(null, true), // dev only
+    credentials: true,
+  });
 
-const port = Number(process.env.PORT || 4001);
-app.listen({ port, host: "0.0.0.0" }).then(() => {
-  console.log(`HTTP listening on :${port}`);
+  await registerRoutes(app);
+
+  const httpServer = createServer();
+  attachSocket(httpServer);
+
+  const wsPort = Number(process.env.PORT || 4001);
+  const httpPort = wsPort + 1;
+
+  httpServer.listen(wsPort, () => {
+    console.log(`WS listening on :${wsPort}`);
+  });
+
+  await app.listen({ port: httpPort, host: "0.0.0.0" });
+  console.log(`HTTP listening on :${httpPort}`);
+}
+
+start().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });
