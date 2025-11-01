@@ -105,14 +105,20 @@ export default function PlayPage() {
   const [playerId, setPlayerId] = useState(initialAs);
   const [state, setState] = useState<any>(null);
   const [joined, setJoined] = useState(false);
+
   const [colors, setColors] = useState<Record<string, string>>({});
   const [toast, setToast] = useState<{ show: boolean; msg: string }>({ show: false, msg: "" });
   const [isSending, setIsSending] = useState(false);
+
+  // Chat
   const [chat, setChat] = useState<Array<{ from?: string; text: string; at: number; system?: boolean }>>([]);
   const [msg, setMsg] = useState("");
-  const [chatEnabled, setChatEnabled] = useState<boolean>(true);
-  const [meta, setMeta] = useState<any>(null);
-  
+  const [chatEnabled, setChatEnabled] = useState<boolean>(true);      // from server meta
+  const [chatPanelVisible, setChatPanelVisible] = useState<boolean>(true); // local toggle
+
+  // Meta (owner/lock)
+  const [locked, setLocked] = useState<boolean>(false);
+  const [owner, setOwner] = useState<string>("");
 
   const sRef = useRef<Socket | null>(null);
   const lastJoinRef = useRef<{ roomId: string; playerId: string } | null>(null);
@@ -121,6 +127,8 @@ export default function PlayPage() {
   const clickAudioRef = useRef<HTMLAudioElement | null>(null);
   const scoreAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatBoxRef = useRef<HTMLDivElement | null>(null);
+
+  const isOwner = !!owner && playerId === owner;
 
   useEffect(() => {
     if (initialRoom && initialAs && !joined) {
@@ -148,19 +156,20 @@ export default function PlayPage() {
   }
 
   async function fetchRoomMeta(id: string) {
-  try {
-    const res = await fetch(`${API_URL}/rooms/${id}`);
-    const data = await res.json();
-    if (data) setMeta(data.meta || null);
-    if (data?.meta?.colors && typeof data.meta.colors === "object") {
-      setColors(data.meta.colors);
+    try {
+      const res = await fetch(`${API_URL}/rooms/${id}`);
+      const data = await res.json();
+      if (data?.meta?.colors && typeof data.meta.colors === "object") setColors(data.meta.colors);
+      if (typeof data?.meta?.chatEnabled === "boolean") {
+        setChatEnabled(data.meta.chatEnabled);
+        setChatPanelVisible(data.meta.chatEnabled); // default local toggle from server setting
+      }
+      if (typeof data?.meta?.locked === "boolean") setLocked(data.meta.locked);
+      if (typeof data?.meta?.owner === "string") setOwner(data.meta.owner);
+    } catch {
+      /* ignore */
     }
-    if (typeof data?.meta?.chatEnabled === "boolean") {
-      setChatEnabled(data.meta.chatEnabled);
-    }
-  } catch {}
-}
-
+  }
 
   function setupSocketListeners(s: Socket) {
     s.removeAllListeners("game.state");
@@ -170,6 +179,7 @@ export default function PlayPage() {
     s.removeAllListeners("error");
     s.removeAllListeners("connect");
     s.removeAllListeners("disconnect");
+    s.removeAllListeners("room.kicked");
 
     s.on("game.state", (st) => {
       setState(st);
@@ -198,27 +208,21 @@ export default function PlayPage() {
       scrollChatToBottom();
     });
 
+    s.on("room.kicked", (payload) => {
+  showToast(payload?.reason || "You were removed");
+  // Optional: navigate away
+  router.replace("/create");
+});
+
     s.on("error", (e) => console.warn("socket error:", e));
 
     s.on("connect", () => {
       if (lastJoinRef.current) {
         const { roomId: r, playerId: p } = lastJoinRef.current;
-        s.emit("room.join", { roomId: r, playerId: p }, (resp: any) => {
-          if (resp?.error) return showToast(resp.error);
-          setJoined(true);
-        });
-        
+        s.emit("room.join", { roomId: r, playerId: p });
+        setJoined(true);
       }
     });
-
-    // after you create the socket (inside setupSocketListeners)
-s.on("room.kicked", (payload) => {
-  // Show toast and optionally redirect
-  console.warn("You were kicked:", payload);
-  // show a toast
-  // router.replace("/create"); // optional
-});
-
 
     s.on("disconnect", () => {
       setJoined(false);
@@ -254,15 +258,6 @@ s.on("room.kicked", (payload) => {
     if (!room) return showToast("Enter a room ID");
     const s = ensureSocket();
 
-    // (temporary dev logger)
-    s.onAny((event, ...args) => {
-      try {
-        console.log(`[ws:onAny] event="${event}" args=`, args);
-      } catch {
-        console.log(`[ws:onAny] event="${event}" (args not serializable)`);
-      }
-    });
-
     lastJoinRef.current = { roomId: room, playerId: who };
 
     const doJoinedSideEffects = () => {
@@ -271,7 +266,6 @@ s.on("room.kicked", (payload) => {
       setPlayerId(who);
       if (opts.pushUrl !== false) router.replace(`/play?room=${room}&as=${encodeURIComponent(who)}`);
       fetchRoomMeta(room);
-      
       showToast(`Joined as ${who}`);
     };
 
@@ -306,14 +300,41 @@ s.on("room.kicked", (payload) => {
 
   const totalEdges = state ? (state.rows + 1) * state.cols + (state.cols + 1) * state.rows : 0;
 
-  const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number } }) => {
-    if (!state || state.finished) return;
-    if (isSending) return;
-    setIsSending(true);
-    clickAudioRef.current?.play().catch(() => {});
-    sRef.current?.emit("game.move", { a: [edge.a.r, edge.a.c], b: [edge.b.r, edge.b.c] });
-    setTimeout(() => setIsSending(false), 350);
+  // inside PlayPage
+const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number } }) => {
+  if (!state || state.finished) return;
+  if (isSending) return;
+
+  setIsSending(true);
+  clickAudioRef.current?.play().catch(() => {});
+
+  const payload = { a: [edge.a.r, edge.a.c], b: [edge.b.r, edge.b.c] };
+
+  let released = false;
+  const release = () => {
+    if (!released) {
+      released = true;
+      setIsSending(false);
+    }
   };
+
+  // Safety net: release if nothing comes back
+  const guard = setTimeout(release, 600);
+
+  sRef.current?.emit("game.move", payload, (resp?: { ok?: true; error?: string }) => {
+    clearTimeout(guard);
+    if (resp?.error) {
+      // ✅ Show the server's validation message
+      showToast(resp.error);
+      release();
+      return;
+    }
+    // On success we usually get game.state broadcast shortly after; if not, still released by guard.
+    // If you want instant release, uncomment next line:
+    // release();
+  });
+};
+
 
   // Chat send helpers (with ack + roomId)
   const sendChat = (text: string) => {
@@ -395,11 +416,100 @@ s.on("room.kicked", (payload) => {
               display: "flex",
               gap: 16,
               alignItems: "flex-start",
-              flexWrap: "wrap",                // stacks on small screens
+              flexWrap: "wrap", // stacks on small screens
             }}
           >
             {/* LEFT: Board + status (~80%) */}
-            <div style={{ flex: chatEnabled ? "1 1 720px" : "1 1 100%" /* stretch if no chat */ , minWidth: 320 }}>
+            <div style={{ flex: chatEnabled && chatPanelVisible ? "1 1 720px" : "1 1 100%", minWidth: 320 }}>
+              {/* Room controls / status */}
+              <div
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  alignItems: "center",
+                  margin: "8px 0 12px",
+                  background: "#0e1530",
+                  padding: 10,
+                  borderRadius: 10,
+                  border: "1px solid #24306b",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span><strong>Room:</strong> {roomId || "—"}</span>
+                <span><strong>Owner:</strong> {owner || "—"}</span>
+                <span>
+                  <strong>Locked:</strong>{" "}
+                  <span style={{ color: locked ? "#f59e0b" : "#22c55e" }}>
+                    {locked ? "Yes" : "No"}
+                  </span>
+                </span>
+
+                {/* Local chat panel toggle (only if room chat is enabled) */}
+                {chatEnabled && (
+                  <button
+                    onClick={() => setChatPanelVisible((v) => !v)}
+                    style={{ padding: "6px 10px", marginLeft: 4 }}
+                    title={chatPanelVisible ? "Hide chat panel" : "Show chat panel"}
+                  >
+                    {chatPanelVisible ? "Hide Chat" : "Show Chat"}
+                  </button>
+                )}
+
+                {/* Owner controls */}
+                {isOwner && (
+                  <>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const res = await fetch(`${API_URL}/rooms/${roomId}/lock`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ by: playerId, locked: !locked }),
+                          });
+                          const data = await res.json();
+                          if (data?.error) return showToast(data.error);
+                          setLocked(!!data.locked);
+                        } catch {
+                          showToast("Failed to toggle lock");
+                        }
+                      }}
+                      style={{ padding: "6px 10px", marginLeft: 4 }}
+                      title={locked ? "Unlock room" : "Lock room (block new names)"}
+                    >
+                      {locked ? "Unlock room" : "Lock room"}
+                    </button>
+
+                    {/* Quick kick buttons (for each non-owner player) */}
+                    {(state?.players || [])
+                      .filter((p: string) => p !== owner)
+                      .map((p: string) => (
+                        <button
+                          key={p}
+                          onClick={async () => {
+                            try {
+                              const res = await fetch(`${API_URL}/rooms/${roomId}/kick`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ by: playerId, target: p }),
+                              });
+                              const data = await res.json();
+                              if (data?.error) return showToast(data.error);
+                              showToast(`Kicked ${p}`);
+                            } catch {
+                              showToast("Kick failed");
+                            }
+                          }}
+                          style={{ padding: "6px 10px" }}
+                          title={`Kick ${p}`}
+                        >
+                          Kick {p}
+                        </button>
+                      ))}
+                  </>
+                )}
+              </div>
+
+              {/* Turn + score strip */}
               <div
                 style={{
                   display: "flex",
@@ -437,28 +547,9 @@ s.on("room.kicked", (payload) => {
                     </span>
                   ))}
                 </span>
-                {meta?.owner === playerId && (
-  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-    <button onClick={async ()=>{
-      await fetch(`${API_URL}/rooms/${roomId}/lock`, { method:"POST", headers:{ "Content-Type": "application/json" }, body: JSON.stringify({ by: playerId, locked: !meta.locked })});
-      const r = await fetch(`${API_URL}/rooms/${roomId}`).then(r=>r.json());
-      setMeta(r.meta || {});
-      showToast(`Room ${r.meta.locked ? "locked" : "unlocked"}`);
-    }}>
-      {meta.locked ? "Unlock room" : "Lock room"}
-    </button>
-
-    {/* Kick dropdown simple */}
-    {state?.players?.filter((p:string)=>p!==playerId).map((p:string)=>(
-      <button key={p} onClick={async ()=>{
-        await fetch(`${API_URL}/rooms/${roomId}/kick`, { method:"POST", headers:{ "Content-Type": "application/json" }, body: JSON.stringify({ by: playerId, target: p })});
-        showToast(`Kicked ${p}`);
-      }}>Kick {p}</button>
-    ))}
-  </div>
-)}
               </div>
 
+              {/* Board */}
               <div
                 style={{
                   display: "inline-block",
@@ -498,70 +589,62 @@ s.on("room.kicked", (payload) => {
               />
             </div>
 
-            {/* RIGHT: Chat (~20%) */}
-            {chatEnabled && (
-            <aside
-              style={{
-                flex: "0 1 320px",          
-                minWidth: 260,              
-                maxWidth: 420,              
-                background: "#0e1530",
-                border: "1px solid #24306b",
-                borderRadius: 10,
-                overflow: "hidden",
-                display: "grid",
-                gridTemplateRows: "1fr auto",
-                height: 520,                // a nice fixed panel height
-              }}
-            >
-              <div
-                ref={chatBoxRef}
-                style={{ padding: 8, overflowY: "auto" }}
+            {/* RIGHT: Chat (~20%) — visible only if server enabled AND user toggled on */}
+            {chatEnabled && chatPanelVisible && (
+              <aside
+                style={{
+                  flex: "0 1 320px",
+                  minWidth: 260,
+                  maxWidth: 420,
+                  background: "#0e1530",
+                  border: "1px solid #24306b",
+                  borderRadius: 10,
+                  overflow: "hidden",
+                  display: "grid",
+                  gridTemplateRows: "1fr auto",
+                  height: 520,
+                }}
               >
-                {chat.map((m, i) => (
-                  <div key={i} style={{ opacity: m.system ? 0.75 : 1, marginBottom: 6 }}>
-                    {!m.system && (
-                      <strong style={{ color: colors[m.from || ""] || "#9ab4ff" }}>{m.from}:</strong>
-                    )}{" "}
-                    <span>{m.text}</span>
-                  </div>
-                ))}
-              </div>
-              <div style={{ display: "flex", gap: 6, padding: 8 }}>
-                <input
-                  value={msg}
-                  onChange={(e) => setMsg(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && msg.trim()) {
+                <div ref={chatBoxRef} style={{ padding: 8, overflowY: "auto" }}>
+                  {chat.map((m, i) => (
+                    <div key={i} style={{ opacity: m.system ? 0.75 : 1, marginBottom: 6 }}>
+                      {!m.system && (
+                        <strong style={{ color: colors[m.from || ""] || "#9ab4ff" }}>{m.from}:</strong>
+                      )}{" "}
+                      <span>{m.text}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 6, padding: 8 }}>
+                  <input
+                    value={msg}
+                    onChange={(e) => setMsg(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && msg.trim()) {
+                        sendChat(msg);
+                        setMsg("");
+                      }
+                    }}
+                    placeholder="Message…"
+                    style={{ flex: 1, padding: 8 }}
+                  />
+                  {["😀", "👍", "🔥", "🎉", "😮"].map((e) => (
+                    <button key={e} onClick={() => sendChat(e)} style={{ padding: "0 8px" }} title={`Send ${e}`}>
+                      {e}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => {
+                      if (!msg.trim()) return;
                       sendChat(msg);
                       setMsg("");
-                    }
-                  }}
-                  placeholder="Message…"
-                  style={{ flex: 1, padding: 8 }}
-                />
-                {["😀", "👍", "🔥", "🎉", "😮"].map((e) => (
-                  <button
-                    key={e}
-                    onClick={() => sendChat(e)}
-                    style={{ padding: "0 8px" }}
-                    title={`Send ${e}`}
+                    }}
                   >
-                    {e}
+                    Send
                   </button>
-                ))}
-                <button
-                  onClick={() => {
-                    if (!msg.trim()) return;
-                    sendChat(msg);
-                    setMsg("");
-                  }}
-                >
-                  Send
-                </button>
-              </div>
+                </div>
               </aside>
-              )}
+            )}
           </div>
         ) : (
           <p>Join a room to see the board.</p>

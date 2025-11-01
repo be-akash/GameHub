@@ -2,13 +2,13 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import Redis from "ioredis";
 import { nanoid } from "nanoid";
 import { getGame } from "../core/game-registry";
-import { occupancy } from "../ws/socket";
+import { occupancy, ioRef } from "../ws/socket";
 import type { Server as IOServer } from "socket.io";
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 const roomKey = (id: string) => `room:${id}:state`;
 
-export async function registerRoutes(app: FastifyInstance) {
+export async function registerRoutes(app: FastifyInstance, io: IOServer) {
   app.get("/health", async () => ({ ok: true }));
 
   app.post("/rooms", async (req: FastifyRequest, reply: FastifyReply) => {
@@ -70,14 +70,6 @@ export async function registerRoutes(app: FastifyInstance) {
     const { roomId } = req.params as any;
     const { text = "hello from server", from = "server" } = (req.body ?? {}) as any;
 
-    // IMPORTANT: import the Socket.IO server where you created it
-    // If you export 'io' from ws/socket.ts when you call attachSocket(httpServer),
-    // make sure to import it here, or pass 'io' into route factories.
-    // If 'io' is not directly available here, move this endpoint into the same module as 'io'.
-
-    // Example if you stored io on fastify instance:
-    // const io = (app as any).io as IOServer;
-
     (app as any).io.to(roomId).emit("chat.message", { from, text, at: Date.now() });
     return reply.send({ ok: true });
   });
@@ -85,32 +77,53 @@ export async function registerRoutes(app: FastifyInstance) {
   app.post("/rooms/:id/lock", async (req, reply) => {
     const { id } = req.params as any;
     const { by, locked } = (req.body ?? {}) as { by: string; locked: boolean };
+
     const raw = await redis.get(roomKey(id));
     if (!raw) return reply.code(404).send({ error: "Room not found" });
     const room = JSON.parse(raw);
     if (room.meta?.owner !== by) return reply.code(403).send({ error: "Only owner can lock" });
+
     room.meta.locked = !!locked;
     await redis.set(roomKey(id), JSON.stringify(room));
+
+    const io = (app as any).io || ioRef;   // <-- here
+    io?.to(id).emit("chat.system", {
+      text: room.meta.locked ? "Room locked" : "Room unlocked",
+      at: Date.now(),
+    });
+
     return reply.send({ ok: true, locked: room.meta.locked });
   });
 
   app.post("/rooms/:id/kick", async (req, reply) => {
     const { id } = req.params as any;
     const { by, target } = (req.body ?? {}) as { by: string; target: string };
+
     const raw = await redis.get(roomKey(id));
     if (!raw) return reply.code(404).send({ error: "Room not found" });
     const room = JSON.parse(raw);
     if (room.meta?.owner !== by) return reply.code(403).send({ error: "Only owner can kick" });
 
+    const io = (app as any).io || ioRef;  // <-- here
+    if (!io) return reply.code(500).send({ error: "Socket server not ready" });
+
     const byPlayer = occupancy.get(id);
     const holder = byPlayer?.get(target);
-    if (holder) {
-      const sock = io.sockets.sockets.get(holder);
-      sock?.emit("room.kicked", { reason: "Removed by owner" });
-      sock?.leave(id);
-      sock?.disconnect(true);
+    if (!holder) return reply.code(404).send({ error: "Target not connected" });
+
+    const sock = io.sockets.sockets.get(holder);
+    if (!sock) {
       byPlayer?.delete(target);
+      return reply.code(404).send({ error: "Socket not found" });
     }
+
+    sock.emit("room.kicked", { reason: "Removed by owner" });
+    sock.leave(id);
+    sock.disconnect(true);
+    byPlayer?.delete(target);
+
+    io.to(id).emit("chat.system", { text: `${target} was kicked`, at: Date.now() });
+
     return reply.send({ ok: true });
   });
 

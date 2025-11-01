@@ -3,7 +3,7 @@ import cors from "@fastify/cors";
 import { createServer } from "http";
 import { registerRoutes } from "./http/routes";
 import { attachSocket } from "./ws/socket";
-
+import { Server } from "socket.io";
 async function start() {
   const app = Fastify({ logger: true });
 
