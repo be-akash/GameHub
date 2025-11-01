@@ -1,0 +1,100 @@
+# ==========================
+# GameHub / DashandDots .gitignore
+# Monorepo: Turborepo + pnpm + Next.js + Fastify
+# ==========================
+
+# --- Node.js ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+.pnpm-store/
+
+# --- Build outputs ---
+dist/
+.next/
+out/
+build/
+coverage/
+*.tsbuildinfo
+
+# --- Logs & temp files ---
+*.log
+logs/
+tmp/
+temp/
+
+# --- Environment files ---
+.env
+.env.local
+.env.development
+.env.production
+.env.*.local
+!.env.example
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*.bak
+*.tmp
+
+# --- OS-specific ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Turborepo cache ---
+.turbo/
+turbo/
+.cache/
+
+# --- Docker / containers ---
+docker-data/
+*.pid
+*.seed
+*.pid.lock
+
+# --- Prisma (optional generated artifacts) ---
+prisma/generated/
+prisma/migrations/dev.db
+
+# --- TypeScript build output ---
+tsconfig.tsbuildinfo
+*.d.ts.map
+
+# --- Test coverage & reports ---
+coverage/
+.nyc_output/
+
+# --- Redis / Postgres data (if persisted locally) ---
+pgdata/
+redis-data/
+
+# --- Local environment overrides ---
+*.local
+*.envrc
+*.secret
+*.bak
+
+# --- Misc ---
+*.zip
+*.tar
+*.gz
+*.tgz
+*.7z
+*.bak
+*.old
+
+# --- Ignore OS trash ---
+$RECYCLE.BIN/
+*.Trash-*
+
+# --- Ignore VS Code remote settings ---
+.history/
+.vscode-server/
+.vscode-test/
