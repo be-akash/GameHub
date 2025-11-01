@@ -12,9 +12,12 @@ export async function registerRoutes(app: FastifyInstance) {
   app.post("/rooms", async (req: FastifyRequest, reply: FastifyReply) => {
     const body = (req.body ?? {}) as any;
     const gameId: string = body.gameId || "dots-and-boxes";
-    const rows = Number(body.rows ?? 5);
-    const cols = Number(body.cols ?? 5);
-    const players = (body.players ?? []) as string[];
+
+    // allow client to send any players (names), colors meta, and size between 5..40
+    const rows = Math.max(5, Math.min(40, Number(body.rows ?? 5)));
+    const cols = Math.max(5, Math.min(40, Number(body.cols ?? 5)));
+    const players = Array.isArray(body.players) && body.players.length >= 1 ? body.players.slice(0, 2) : ["p1", "p2"];
+    const meta = typeof body.meta === "object" && body.meta ? body.meta : {}; // e.g. { colors: { "alex": "#ff0000", "maria": "#00ff00" } }
 
     const game = getGame(gameId);
     if (!game) return reply.code(400).send({ error: "Unknown gameId" });
@@ -22,7 +25,7 @@ export async function registerRoutes(app: FastifyInstance) {
     const roomId = nanoid(8);
     const initial = (game as any).createInitialState({ rows, cols, players });
 
-    const room = { gameId, players, state: initial };
+    const room = { gameId, players, state: initial, meta };
     await redis.set(roomKey(roomId), JSON.stringify(room));
 
     return reply.send({ roomId, gameId });

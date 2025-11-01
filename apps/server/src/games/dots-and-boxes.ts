@@ -7,6 +7,7 @@ export interface DotsState extends GameState {
   owners: Record<string, PlayerId | null>;
   remainingEdges: number;
   scores: Record<PlayerId, number>;
+  edgeOwners: Record<string, PlayerId>;
 }
 
 export interface DotsMove extends MovePayload {
@@ -15,7 +16,7 @@ export interface DotsMove extends MovePayload {
 }
 
 function keyOf(a: [number, number], b: [number, number]) {
-  const [r1,c1] = a, [r2,c2] = b;
+  const [r1, c1] = a, [r2, c2] = b;
   const k1 = `${r1},${c1}`, k2 = `${r2},${c2}`;
   return k1 < k2 ? `${k1}|${k2}` : `${k2}|${k1}`;
 }
@@ -27,10 +28,10 @@ function isAdjacent(a: [number, number], b: [number, number]) {
 }
 
 function cellEdges(r: number, c: number) {
-  const top: [[number, number],[number, number]] = [[r, c], [r, c+1]];
-  const bottom: [[number, number],[number, number]] = [[r+1, c], [r+1, c+1]];
-  const left: [[number, number],[number, number]] = [[r, c], [r+1, c]];
-  const right: [[number, number],[number, number]] = [[r, c+1], [r+1, c+1]];
+  const top: [[number, number], [number, number]] = [[r, c], [r, c + 1]];
+  const bottom: [[number, number], [number, number]] = [[r + 1, c], [r + 1, c + 1]];
+  const left: [[number, number], [number, number]] = [[r, c], [r + 1, c]];
+  const right: [[number, number], [number, number]] = [[r, c + 1], [r + 1, c + 1]];
   return [top, right, bottom, left];
 }
 
@@ -44,7 +45,7 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
     const rows = Math.max(2, Number(opts?.rows ?? 5));
     const cols = Math.max(2, Number(opts?.cols ?? 5));
     const players: PlayerId[] = opts?.players?.length ? opts.players : ["p1", "p2"];
-    const totalEdges = rows * (cols - 1) + (rows - 1) * cols;
+    const totalEdges = (rows + 1) * cols + (cols + 1) * rows;
 
     const scores: Record<PlayerId, number> = {};
     players.forEach(p => (scores[p] = 0));
@@ -59,6 +60,7 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
       remainingEdges: totalEdges,
       scores,
       finished: false,
+      edgeOwners: {},
     };
   },
 
@@ -82,25 +84,27 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
   applyMove(state, move, player) {
     const k = keyOf(move.a, move.b);
     state.edges[k] = 1;
-    state.remainingEdges--;
+    state.edgeOwners[k] = player;
+    // state.remainingEdges--;
 
     let boxesCompleted = 0;
-    const [r1,c1] = move.a, [r2,c2] = move.b;
+    const [r1, c1] = move.a, [r2, c2] = move.b;
     const candidates: Array<[number, number]> = [];
 
     if (r1 === r2) {
-      const r = r1, cStart = Math.min(c1,c2);
-      if (r > 0) candidates.push([r-1, cStart]);
-      if (r < state.rows-1) candidates.push([r, cStart]);
+      const r = r1, cStart = Math.min(c1, c2);
+      if (r > 0) candidates.push([r - 1, cStart]); // cell above
+      if (r < state.rows) candidates.push([r, cStart]); // ✅ cell below (ALLOW r == rows-1)
     } else {
-      const c = c1, rStart = Math.min(r1,r2);
-      if (c > 0) candidates.push([rStart, c-1]);
-      if (c < state.cols-1) candidates.push([rStart, c]);
+      const c = c1, rStart = Math.min(r1, r2);
+      if (c > 0) candidates.push([rStart, c - 1]); // cell left
+      if (c < state.cols) candidates.push([rStart, c]); // ✅ cell right (ALLOW c == cols-1)
     }
+
 
     for (const [rr, cc] of candidates) {
       const complete = cellEdges(rr, cc)
-        .map(([a,b]) => keyOf(a,b))
+        .map(([a, b]) => keyOf(a, b))
         .every(e => !!state.edges[e]);
       const cellKey = `${rr},${cc}`;
       if (complete && !state.owners[cellKey]) {
@@ -117,6 +121,8 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
       state.currentPlayer = state.players[(idx + 1) % state.players.length];
     }
 
+    const total = (state.rows + 1) * state.cols + (state.cols + 1) * state.rows;
+    state.remainingEdges = total - Object.keys(state.edges).length;
     if (state.remainingEdges <= 0) state.finished = true;
 
     const result: MoveResult = {

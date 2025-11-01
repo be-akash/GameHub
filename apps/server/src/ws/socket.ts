@@ -52,6 +52,7 @@ export function attachSocket(httpServer: any) {
         if (applied.events?.length) io.to(roomId).emit("game.events", applied.events);
       });
     });
+
   });
 
   return io;
