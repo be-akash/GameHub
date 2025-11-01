@@ -16,6 +16,7 @@ export default function CreatePage() {
   const [c2, setC2] = useState("#ff3b3b");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatEnabled, setChatEnabled] = useState(true);
 
   // post-create UI
   const [roomId, setRoomId] = useState<string | null>(null);
@@ -45,7 +46,9 @@ export default function CreatePage() {
           rows: s,
           cols: s,
           players: [p1, p2],
-          meta: { colors: { [p1]: c1, [p2]: c2 } },
+          meta: { colors: { [p1]: c1, [p2]: c2 }, chatEnabled },
+          owner: p1,  
+           locked: false
         }),
       });
       const data = await res.json();
@@ -112,6 +115,15 @@ export default function CreatePage() {
             <input type="color" value={c2} onChange={(e) => setC2(e.target.value)} style={{ width: 120, height: 40 }} disabled={!!roomId} />
           </label>
         </div>
+
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+  <input
+    type="checkbox"
+    checked={chatEnabled}
+    onChange={(e) => setChatEnabled(e.target.checked)}
+  />
+  Enable chat
+</label>
 
         {error && (
           <div style={{ color: "#ff6b6b", background: "#2a0f14", padding: 8, borderRadius: 8, border: "1px solid #5a1f26" }}>

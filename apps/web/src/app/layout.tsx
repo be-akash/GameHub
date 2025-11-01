@@ -14,19 +14,25 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "GameHub",
-  description: "Multiplayer turn-based games",
+  description: "Multiplayer Dots & Boxes",
   viewport: "width=device-width, initial-scale=1, maximum-scale=1",
+  manifest: "/manifest.webmanifest"
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body>
         {children}
+        <script dangerouslySetInnerHTML={{
+          __html: `
+            if ('serviceWorker' in navigator) {
+              window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').catch(()=>{});
+              });
+            }
+          `
+        }} />
       </body>
     </html>
   );
