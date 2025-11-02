@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { registerSW } from "@/src/lib/register-sw";
+import { registerSW } from "@/lib/register-sw";
 
 export default function ServiceWorkerProvider({ children }: { children: React.ReactNode }) {
     const [reg, setReg] = useState<ServiceWorkerRegistration | null>(null);
