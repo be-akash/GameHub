@@ -9,7 +9,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
 export default function CreatePage() {
   const router = useRouter();
 
-  const [size, setSize] = useState(5); // 5..40
+  const [size, setSize] = useState(5); // 5..20
+  const [sizeText, setSizeText] = useState("5");
   const [p1, setP1] = useState("p1");
   const [p2, setP2] = useState("p2");
   const [c1, setC1] = useState("#2b54ff");
@@ -22,7 +23,7 @@ export default function CreatePage() {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ show: boolean; msg: string }>({ show: false, msg: "" });
 
-  const clamp = (n: number) => Math.max(5, Math.min(40, n));
+  const clamp = (n: number) => Math.max(5, Math.min(20, n));
   const showToast = (msg: string) => setToast({ show: true, msg });
 
   const urlFor = (asName: string) =>
@@ -47,8 +48,8 @@ export default function CreatePage() {
           cols: s,
           players: [p1, p2],
           meta: { colors: { [p1]: c1, [p2]: c2 }, chatEnabled },
-          owner: p1,  
-           locked: false
+          owner: p1,
+          locked: false
         }),
       });
       const data = await res.json();
@@ -81,16 +82,36 @@ export default function CreatePage() {
       {/* Config form (disabled after create) */}
       <div style={{ display: "grid", gap: 12, maxWidth: 640, opacity: roomId ? 0.6 : 1 }}>
         <label>
-          <div>Board size (5–40)</div>
+          <div>Board size (5–20)</div>
           <input
             type="number"
             min={5}
-            max={40}
-            value={size}
-            onChange={(e) => setSize(parseInt(e.target.value || "5", 10))}
+            max={20}
+            step={1}
+            inputMode="numeric"
+            value={sizeText}
+            onChange={(e) => {
+              // allow empty / partial input while typing
+              setSizeText(e.target.value);
+            }}
+            onBlur={() => {
+              const n = parseInt(sizeText, 10);
+              const next = isNaN(n) ? 5 : clamp(n);
+              setSize(next);
+              setSizeText(String(next));
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const n = parseInt(sizeText, 10);
+                const next = isNaN(n) ? 5 : clamp(n);
+                setSize(next);
+                setSizeText(String(next));
+              }
+            }}
             style={{ width: 120, padding: 8 }}
             disabled={!!roomId}
           />
+
           <div style={{ opacity: 0.7, marginTop: 4 }}>Board will be {clamp(size)} × {clamp(size)}</div>
         </label>
 
@@ -117,13 +138,13 @@ export default function CreatePage() {
         </div>
 
         <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-  <input
-    type="checkbox"
-    checked={chatEnabled}
-    onChange={(e) => setChatEnabled(e.target.checked)}
-  />
-  Enable chat
-</label>
+          <input
+            type="checkbox"
+            checked={chatEnabled}
+            onChange={(e) => setChatEnabled(e.target.checked)}
+          />
+          Enable chat
+        </label>
 
         {error && (
           <div style={{ color: "#ff6b6b", background: "#2a0f14", padding: 8, borderRadius: 8, border: "1px solid #5a1f26" }}>
