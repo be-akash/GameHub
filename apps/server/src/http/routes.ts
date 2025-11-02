@@ -1,14 +1,14 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import Redis from "ioredis";
 import { nanoid } from "nanoid";
-import { getGame } from "../core/game-registry";
-import { occupancy, ioRef } from "../ws/socket";
+import { getGame } from "../core/game-registry.js";
+import { occupancy, ioRef } from "../ws/socket.js";
 import type { Server as IOServer } from "socket.io";
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 const roomKey = (id: string) => `room:${id}:state`;
 
-export async function registerRoutes(app: FastifyInstance, io: IOServer) {
+export async function registerRoutes(app: FastifyInstance) {
   app.get("/health", async () => ({ ok: true }));
 
   app.post("/rooms", async (req: FastifyRequest, reply: FastifyReply) => {

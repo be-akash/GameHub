@@ -1,50 +1,57 @@
-// apps/server/src/index.ts
-import Fastify from "fastify";
+import Fastify, { FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import { createServer } from "http";
-import { registerRoutes } from "./http/routes";
-import { attachSocket } from "./ws/socket";
+import { registerRoutes } from "./http/routes.js";
+import { attachSocket } from "./ws/socket.js";
 
-const API_PORT = Number(process.env.API_PORT ?? 4002);
-const WS_PORT = Number(process.env.WS_PORT ?? 4001);
-const RENDER_PORT = process.env.PORT ? Number(process.env.PORT) : null; // Render supplies PORT
+// ── Env ────────────────────────────────────────────────────────────────────────
+const PORT = Number(process.env.PORT ?? 0);        // Render supplies this
+const API_PORT = Number(process.env.API_PORT ?? 4002); // local dev API port
+const WS_PORT = Number(process.env.WS_PORT ?? 4001);  // local dev WS port
 const CORS_ORIGIN = (process.env.CORS_ORIGIN ?? "http://localhost:3000")
   .split(",")
   .map(s => s.trim())
   .filter(Boolean);
 
-// Single-port when running on Render (PORT) or when SINGLE_PORT=1
-const SINGLE_PORT = !!RENDER_PORT || process.env.SINGLE_PORT === "1";
-
+// ── Start ──────────────────────────────────────────────────────────────────────
 async function start() {
-  const app = Fastify({ logger: true });
+  const app: FastifyInstance = Fastify({ logger: true });
 
+  // CORS: keep it simple & typed
+  // @fastify/cors for Fastify v5 expects origin: boolean | string | RegExp | (string|RegExp)[] | function
   await app.register(cors, {
     origin: (origin, cb) => {
+      // Allow tools/curl
       if (!origin) return cb(null, true);
-      const ok = CORS_ORIGIN.includes(origin) || CORS_ORIGIN.includes("*");
-      cb(ok ? null : new Error("CORS blocked"), ok);
+      // Allow if matches the allowlist
+      const allowed =
+        CORS_ORIGIN.length === 0 || CORS_ORIGIN.includes(origin);
+      cb(allowed ? null : new Error("CORS blocked"), allowed);
     },
     credentials: true,
-  });
+  } as any); // cast avoids TS noise across plugin signature variants
 
+  // HTTP routes
   await registerRoutes(app);
 
-  if (SINGLE_PORT) {
-    // One port for both API + Socket.IO (Render)
-    attachSocket(app.server);
-    const port = RENDER_PORT ?? 10000;
-    await app.listen({ port, host: "0.0.0.0" });
-    app.log.info(`HTTP+WS listening on :${port}`);
+  if (PORT) {
+    // ── Single-port mode (Render or local when you set PORT) ──
+    // Fastify already has an http.Server at app.server → attach Socket.IO to it
+    attachSocket(app.server, app);
+    await app.listen({ port: PORT, host: "0.0.0.0" });
+    app.log.info(`HTTP+WS listening on :${PORT} (single-port mode)`);
   } else {
-    // Dev: two ports
-    const httpServer = createServer();
-    attachSocket(httpServer);
-    await new Promise<void>((resolve) => httpServer.listen(WS_PORT, resolve));
-    console.log(`WS listening on :${WS_PORT}`);
-
+    // ── Two-port local dev ──
+    // 1) API
     await app.listen({ port: API_PORT, host: "0.0.0.0" });
-    console.log(`HTTP listening on :${API_PORT}`);
+    app.log.info(`HTTP listening on :${API_PORT}`);
+
+    // 2) WS
+    const wsServer = createServer(); // pure WS server (no request handler)
+    attachSocket(wsServer, app);
+    wsServer.listen(WS_PORT, () => {
+      console.log(`WS listening on :${WS_PORT}`);
+    });
   }
 }
 

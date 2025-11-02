@@ -1,15 +1,16 @@
-// ADD/EDIT at top
+// ws/socket.ts
 import { Server as IOServer } from "socket.io";
 import Redis from "ioredis";
 import type { GameDefinition } from "@dashanddots/shared";
-import { getGame } from "../core/game-registry";
+import { getGame } from "../core/game-registry.js";
 
-export const occupancy = new Map<string, Map<string, string>>(); // export so routes can read it
-export let ioRef: IOServer | null = null; // exported handle for routes as fallback
+export const occupancy = new Map<string, Map<string, string>>();
+export let ioRef: IOServer | null = null;
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379");
 const roomKey = (id: string) => `room:${id}:state`;
 
+// token bucket helpers unchanged…
 const rate = new Map<string, { chat: { tokens: number, last: number }, move: { tokens: number, last: number } }>();
 const refill = (b: { tokens: number, last: number }, rps: number, cap: number) => {
   const now = Date.now();
@@ -34,15 +35,22 @@ type RoomState = {
   };
 };
 
-// Accept fastify instance to decorate with io
-export function attachSocket(httpServer: any, fastifyApp?: any) {
+// ✅ Accept corsOrigins and (optionally) fastify app to expose io
+export function attachSocket(
+  httpServer: any,
+  fastifyApp?: any
+) {
   const io = new IOServer(httpServer, { cors: { origin: "*" } });
   ioRef = io;
-  if (fastifyApp) fastifyApp.io = io; // <-- make available to routes
+  if (fastifyApp) (fastifyApp as any).io = io;
 
   io.on("connection", (socket) => {
-    rate.set(socket.id, { chat: { tokens: 5, last: Date.now() }, move: { tokens: 5, last: Date.now() } });
-    // JOIN with ack so we can reject if locked
+    rate.set(socket.id, {
+      chat: { tokens: 5, last: Date.now() },
+      move: { tokens: 5, last: Date.now() },
+    });
+
+    // JOIN with ack
     socket.on(
       "room.join",
       async (
@@ -55,12 +63,11 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
         if (!raw) return ack?.({ error: "Room not found" });
         const room: RoomState = JSON.parse(raw);
 
-        // enforce lock: only existing players can join
         if (room.meta?.locked && !room.players.includes(playerId)) {
           return ack?.({ error: "Room is locked" });
         }
 
-        // single-holder policy per name
+        // single socket per name
         const byPlayer = occupancy.get(roomId) || new Map<string, string>();
         const holder = byPlayer.get(playerId);
         if (holder && holder !== socket.id) {
@@ -89,93 +96,88 @@ export function attachSocket(httpServer: any, fastifyApp?: any) {
       }
     );
 
-    // Moves now use ACK to return validation errors
-    // apps/server/src/ws/socket.ts
+    // ✅ Moves with ACK (invalid move → { error })
     socket.on(
       "game.move",
-      async (
-        payload: any,
-        ack?: (resp: { ok?: true; error?: string }) => void
-      ) => {
+      async (payload: any, ack?: (resp: { ok?: true; error?: string }) => void) => {
+        const respond = (r: { ok?: true; error?: string }) => { try { ack?.(r); } catch { } };
 
+        // simple rate limit
         const b = rate.get(socket.id)!;
         refill(b.move, 2, 4);
-        if (!take(b.move, 1)) return ack?.({ error: "Slow down (moves)" });
-        // helper so we never forget to respond
-        const respond = (r: { ok?: true; error?: string }) => {
-          try { ack?.(r); } catch { }
-        };
+        if (!take(b.move, 1)) return respond({ error: "Slow down (moves)" });
 
         try {
           const roomId = socket.data?.roomId as string | undefined;
           const player = socket.data?.playerId as string | undefined;
-
           if (!roomId || !player) return respond({ error: "Not in a room" });
 
           const raw = await redis.get(roomKey(roomId));
           if (!raw) return respond({ error: "Room vanished" });
 
           const cur: RoomState = JSON.parse(raw);
-          const game = getGame(cur.gameId) as GameDefinition | undefined;
+          const game = getGame(cur.gameId) as GameDefinition<any, any> | undefined; // 👈 avoid TS mismatch
           if (!game) return respond({ error: "Game not found" });
 
-          // validate against the actual player on this socket
           const v = game.validateMove(cur.state, payload, player);
           if (v !== true) return respond({ error: String(v) });
 
-          // apply
           const applied = game.applyMove(cur.state, payload, player);
           cur.state = applied.state;
 
           await redis.set(roomKey(roomId), JSON.stringify(cur));
           await redis.expire(roomKey(roomId), 60 * 60 * 24);
 
-          // broadcast new state/events
           io.to(roomId).emit("game.state", cur.state);
           if (applied.events?.length) io.to(roomId).emit("game.events", applied.events);
 
           return respond({ ok: true });
-        } catch (e: any) {
+        } catch (e) {
           console.error("[game.move] error", e);
           return respond({ error: "Move failed" });
         }
       }
     );
 
-
-    // Chat (respects meta.chatEnabled)
+    // Chat (respects meta.chatEnabled) with ACK
     socket.on(
       "chat.message",
       async (
         { text, roomId: rid }: { text: string; roomId?: string },
         ack?: (resp: { ok?: true; error?: string }) => void
       ) => {
+        const respond = (r: { ok?: true; error?: string }) => { try { ack?.(r); } catch { } };
+
         const b = rate.get(socket.id)!;
         refill(b.chat, 2, 5);
-        if (!take(b.chat, 1)) return ack?.({ error: "Slow down (chat)" });
+        if (!take(b.chat, 1)) return respond({ error: "Slow down (chat)" });
+
         const roomId = (rid || socket.data.roomId || "").trim();
         const from = (socket.data?.playerId || "anon").toString();
         const t = String(text ?? "").trim();
-        if (!roomId) return ack?.({ error: "Not joined to a room" });
-        if (!t) return ack?.({ error: "Empty message" });
+
+        if (!roomId) return respond({ error: "Not joined to a room" });
+        if (!t) return respond({ error: "Empty message" });
 
         const raw = await redis.get(roomKey(roomId));
         if (raw) {
           const room: RoomState = JSON.parse(raw);
           if (room?.meta?.chatEnabled === false) {
-            return ack?.({ error: "Chat is disabled for this room" });
+            return respond({ error: "Chat is disabled for this room" });
           }
         }
+
         const room = socket.nsp.adapter.rooms.get(roomId);
         if (!room || !room.has(socket.id)) socket.join(roomId);
 
         io.to(roomId).emit("chat.message", { from, text: t.slice(0, 300), at: Date.now() });
-        return ack?.({ ok: true });
+        return respond({ ok: true });
       }
     );
-    socket.on("disconnect", () => rate.delete(socket.id));
 
+    // ✅ single disconnect handler (you had it twice)
     socket.on("disconnect", () => {
+      rate.delete(socket.id);
       const { roomId, playerId } = socket.data || {};
       if (roomId && playerId) {
         const byPlayer = occupancy.get(roomId);
