@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import { useRouter, useSearchParams } from "next/navigation";
 import DotsBoard from "../components/DotsBoard";
@@ -134,8 +134,108 @@ export default function PlayBody() {
   const chatBoxRef = useRef<HTMLDivElement | null>(null);
   const [soundReady, setSoundReady] = useState(false);
   const prevTurnRef = useRef<string | null>(null);
+  const [edgeHighlights, setEdgeHighlights] = useState<Map<string, number>>(new Map());
+  const [boxHighlights, setBoxHighlights] = useState<Map<string, number>>(new Map());
+  type Point = { r: number; c: number };
+  type EdgeLike =
+    | { a: Point | [number, number]; b: Point | [number, number] }
+    | [[number, number], [number, number]];
+  const prevStateRef = useRef<any | null>(null);
 
   const isOwner = !!owner && playerId === owner;
+
+  function toPoint(x: any): Point {
+    if (Array.isArray(x)) return { r: x[0], c: x[1] };
+    return { r: x?.r, c: x?.c };
+  }
+
+  function edgeKeyFlexible(e: EdgeLike): string {
+    const aRaw = (e as any).a ?? (e as any)[0];
+    const bRaw = (e as any).b ?? (e as any)[1];
+    const a = toPoint(aRaw);
+    const b = toPoint(bRaw);
+    const A = `${a.r},${a.c}`;
+    const B = `${b.r},${b.c}`;
+    return A < B ? `${A}|${B}` : `${B}|${A}`;
+  }
+
+  function extractEdgeKeys(s: any): string[] {
+    if (!s) return [];
+
+    // 1) edges as an array?
+    const e = s.edges;
+    if (Array.isArray(e)) {
+      try { return e.map((x: any) => edgeKeyFlexible(x)); } catch { /* fallthrough */ }
+    }
+
+    // 2) edges as an object map? use its keys if they look like "r,c|r,c"
+    if (e && typeof e === "object") {
+      const ks = Object.keys(e);
+      if (ks.length && ks[0].includes("|")) return ks;
+    }
+
+    // 3) edgeOwners as an object map?
+    const eo = s.edgeOwners;
+    if (eo && typeof eo === "object") {
+      const ks = Object.keys(eo);
+      if (ks.length) return ks;
+    }
+
+    return [];
+  }
+
+
+  /** Return a list of "r,c" keys for squares that are already claimed */
+  function extractBoxKeys(s: any): string[] {
+    if (!s) return [];
+
+    // 1) owners as 2D array (rows-1 x cols-1)
+    const m = s.owners || s.cellOwners || s.boxOwners;
+    if (Array.isArray(m)) {
+      const out: string[] = [];
+      for (let r = 0; r < m.length; r++) {
+        const row = m[r] || [];
+        for (let c = 0; c < row.length; c++) {
+          const v = row[c];
+          // consider claimed if value is neither undefined nor null nor empty string
+          if (v !== undefined && v !== null && `${v}` !== "") out.push(`${r},${c}`);
+        }
+      }
+      if (out.length) return out;
+    }
+
+    // 2) owners as object map: { "r,c": "p1", ... }
+    const obj = s.owners || s.cellOwners || s.boxOwners;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      const ks = Object.keys(obj);
+      // Heuristic: keys that look like "r,c"
+      if (ks.length && ks[0].includes(",")) {
+        // keep only those with truthy owner values
+        return ks.filter(k => {
+          const v = obj[k];
+          return v !== undefined && v !== null && `${v}` !== "";
+        });
+      }
+    }
+
+    // 3) fallback: some servers send a list of completed squares
+    if (Array.isArray(s.completedSquares)) {
+      // each entry may be {r,c} or [r,c]
+      return s.completedSquares.map((x: any) => {
+        const r = Array.isArray(x) ? x[0] : x?.r;
+        const c = Array.isArray(x) ? x[1] : x?.c;
+        return `${r},${c}`;
+      });
+    }
+
+    return [];
+  }
+
+
+  function cellKey(r: number, c: number) {
+    return `${r},${c}`;
+  }
+
 
   useEffect(() => {
     if (initialRoom && initialAs && !joined) {
@@ -158,6 +258,34 @@ export default function PlayBody() {
     window.addEventListener("pointerdown", handler, { once: true });
     return () => window.removeEventListener("pointerdown", handler);
   }, [soundReady]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const now = Date.now();
+
+      setEdgeHighlights((old) => {
+        let changed = false;
+        const next = new Map<string, number>();
+        for (const [k, expires] of old) {
+          if (expires > now) next.set(k, expires);
+          else changed = true;
+        }
+        return changed ? next : old;
+      });
+
+      setBoxHighlights((old) => {
+        let changed = false;
+        const next = new Map<string, number>();
+        for (const [k, expires] of old) {
+          if (expires > now) next.set(k, expires);
+          else changed = true;
+        }
+        return changed ? next : old;
+      });
+    }, 200);
+
+    return () => clearInterval(t);
+  }, []);
 
   function showToast(msg: string) {
     setToast({ show: true, msg });
@@ -213,26 +341,100 @@ export default function PlayBody() {
     s.removeAllListeners("room.kicked");
 
     s.on("game.state", (st) => {
-      const prev = prevTurnRef.current;
-      const next = st.currentPlayer;
-      if (prev === null) {
-        prevTurnRef.current = next;
+      const prevTurn = prevTurnRef.current;
+      const nextTurn = st.currentPlayer;
+      if (prevTurn === null) {
+        prevTurnRef.current = nextTurn;
       }
+
       if (soundReady) {
         clickAudioRef.current?.play().catch(() => { });
       }
+
+      // --- Step 1: compute diffs for highlights ---
+      const now = Date.now();
+      const prevState = prevStateRef.current;
+
+      if (!prevStateRef.current) {
+        console.log("[debug] first state", {
+          ownersType: Array.isArray(st.owners) ? "matrix" : typeof st.owners,
+          ownersSampleRow0: Array.isArray(st.owners) ? st.owners?.[0] : undefined,
+          cellOwnersType: Array.isArray(st.cellOwners) ? "matrix" : typeof st.cellOwners,
+          cellOwnersSampleRow0: Array.isArray(st.cellOwners) ? st.cellOwners?.[0] : undefined,
+          boxOwnersType: typeof st.boxOwners,
+          boxOwnersKeys: st.boxOwners ? Object.keys(st.boxOwners).slice(0, 5) : undefined,
+          completedSquares: st.completedSquares,
+        });
+      }
+
+
+
+      // EDGE DIFF: new edges since last state (robust to arrays or maps)
+      try {
+        const prevKeys = new Set(extractEdgeKeys(prevState));
+        const nextKeys = new Set(extractEdgeKeys(st));
+
+        const addedNow: string[] = [];
+        for (const k of nextKeys) {
+          if (!prevKeys.has(k)) addedNow.push(k);
+        }
+
+        if (addedNow.length) {
+          setEdgeHighlights((old) => {
+            const m = new Map(old);
+            const expires = Date.now() + 2000; // 2s burn
+            for (const k of addedNow) m.set(k, expires);
+            return m;
+          });
+          console.log("[highlight] new edges:", addedNow);
+        }
+      } catch (err) {
+        console.warn("edge diff failed", err);
+      }
+
+
+
+      // BOX DIFF: owners matrix transition undefined -> some player
+      // BOX DIFF: newly claimed squares since last state (robust to arrays or maps)
+      try {
+        const prevBoxes = new Set(extractBoxKeys(prevState));
+        const nextBoxes = new Set(extractBoxKeys(st));
+
+        const newlyClaimed: string[] = [];
+        for (const k of nextBoxes) {
+          if (!prevBoxes.has(k)) newlyClaimed.push(k);
+        }
+
+        if (newlyClaimed.length) {
+          setBoxHighlights((old) => {
+            const m = new Map(old);
+            const expires = Date.now() + 1000; // 1s bomb
+            for (const k of newlyClaimed) m.set(k, expires);
+            return m;
+          });
+          console.log("[highlight] new boxes:", newlyClaimed);
+        }
+      } catch (err) {
+        console.warn("box diff failed", err);
+      }
+
+
+      // move along with your existing state updates
       setState(st);
       setIsSending(false);
-      
-      
-      
-      if (prev !== next) {
-        prevTurnRef.current = next;
-        if (next === playerId && soundReady) {
+
+      // Turn change audio (existing)
+      if (prevTurn !== nextTurn) {
+        prevTurnRef.current = nextTurn;
+        if (nextTurn === playerId && soundReady) {
           turnAudioRef.current?.play().catch(() => { });
         }
       }
+
+      // Save snapshot for next diff
+      prevStateRef.current = st;
     });
+
 
     s.on("game.events", (ev: any[]) => {
       if (Array.isArray(ev) && ev.some((e) => e?.type === "score")) {
@@ -623,7 +825,12 @@ export default function PlayBody() {
                   onMove={onMove}
                   colors={colors}
                   disabled={isSending || state.finished}
+                  edgeHighlights={edgeHighlights}
+                  boxHighlights={boxHighlights}
                 />
+
+                {/* <span title="Edges highlighted for burn">🔥 edges: {edgeHighlights.size}</span>
+                <span title="Boxes highlighted for bomb">💥 boxes: {boxHighlights.size}</span> */}
               </div>
 
               <WinnerModal
