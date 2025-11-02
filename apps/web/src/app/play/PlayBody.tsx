@@ -6,8 +6,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import DotsBoard from "../components/DotsBoard";
 import Toast from "../components/Toast";
 
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
-const WS_URL  = process.env.NEXT_PUBLIC_WS_URL  || "http://localhost:4001";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:4001";
 
 /** Winner overlay */
 function WinnerModal({
@@ -98,6 +99,8 @@ export default function PlayBody() {
   const router = useRouter();
   const search = useSearchParams();
 
+
+
   const initialRoom = search.get("room") ?? "";
   const initialAs = decodeURIComponent(search.get("as") ?? "p1");
 
@@ -115,6 +118,7 @@ export default function PlayBody() {
   const [msg, setMsg] = useState("");
   const [chatEnabled, setChatEnabled] = useState<boolean>(true);      // from server meta
   const [chatPanelVisible, setChatPanelVisible] = useState<boolean>(true); // local toggle
+  const playerIdRef = useRef(playerId);
 
   // Meta (owner/lock)
   const [locked, setLocked] = useState<boolean>(false);
@@ -126,7 +130,10 @@ export default function PlayBody() {
   // Sounds (optional placeholders)
   const clickAudioRef = useRef<HTMLAudioElement | null>(null);
   const scoreAudioRef = useRef<HTMLAudioElement | null>(null);
+  const turnAudioRef = useRef<HTMLAudioElement | null>(null);
   const chatBoxRef = useRef<HTMLDivElement | null>(null);
+  const [soundReady, setSoundReady] = useState(false);
+  const prevTurnRef = useRef<string | null>(null);
 
   const isOwner = !!owner && playerId === owner;
 
@@ -143,6 +150,15 @@ export default function PlayBody() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => { playerIdRef.current = playerId; }, [playerId]);
+
+  useEffect(() => {
+    if (soundReady) return;
+    const handler = () => unlockAudio();
+    window.addEventListener("pointerdown", handler, { once: true });
+    return () => window.removeEventListener("pointerdown", handler);
+  }, [soundReady]);
+
   function showToast(msg: string) {
     setToast({ show: true, msg });
   }
@@ -153,6 +169,21 @@ export default function PlayBody() {
     requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
+  }
+
+  function unlockAudio() {
+    if (soundReady) return;
+    const tryPlayAll = async () => {
+      try { await clickAudioRef.current?.play(); } catch { }
+      try { await scoreAudioRef.current?.play(); } catch { }
+      try { await turnAudioRef.current?.play(); } catch { }
+      // Pause them immediately so we don't actually hear them now
+      clickAudioRef.current?.pause(); clickAudioRef.current!.currentTime = 0;
+      scoreAudioRef.current?.pause(); scoreAudioRef.current!.currentTime = 0;
+      turnAudioRef.current?.pause(); turnAudioRef.current!.currentTime = 0;
+      setSoundReady(true);
+    };
+    tryPlayAll();
   }
 
   async function fetchRoomMeta(id: string) {
@@ -182,13 +213,30 @@ export default function PlayBody() {
     s.removeAllListeners("room.kicked");
 
     s.on("game.state", (st) => {
+      const prev = prevTurnRef.current;
+      const next = st.currentPlayer;
+      if (prev === null) {
+        prevTurnRef.current = next;
+      }
+      if (soundReady) {
+        clickAudioRef.current?.play().catch(() => { });
+      }
       setState(st);
       setIsSending(false);
+      
+      
+      
+      if (prev !== next) {
+        prevTurnRef.current = next;
+        if (next === playerId && soundReady) {
+          turnAudioRef.current?.play().catch(() => { });
+        }
+      }
     });
 
     s.on("game.events", (ev: any[]) => {
       if (Array.isArray(ev) && ev.some((e) => e?.type === "score")) {
-        scoreAudioRef.current?.play().catch(() => {});
+        scoreAudioRef.current?.play().catch(() => { });
       }
     });
 
@@ -209,10 +257,10 @@ export default function PlayBody() {
     });
 
     s.on("room.kicked", (payload) => {
-  showToast(payload?.reason || "You were removed");
-  // Optional: navigate away
-  router.replace("/create");
-});
+      showToast(payload?.reason || "You were removed");
+      // Optional: navigate away
+      router.replace("/create");
+    });
 
     s.on("error", (e) => console.warn("socket error:", e));
 
@@ -301,39 +349,36 @@ export default function PlayBody() {
   const totalEdges = state ? (state.rows + 1) * state.cols + (state.cols + 1) * state.rows : 0;
 
   // inside PlayPage
-const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number } }) => {
-  if (!state || state.finished) return;
-  if (isSending) return;
+  const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number } }) => {
+    if (!state || state.finished) return;
+    if (isSending) return;
 
-  setIsSending(true);
-  clickAudioRef.current?.play().catch(() => {});
+    setIsSending(true);
+    clickAudioRef.current?.play().catch(() => { });
 
-  const payload = { a: [edge.a.r, edge.a.c], b: [edge.b.r, edge.b.c] };
+    const payload = { a: [edge.a.r, edge.a.c], b: [edge.b.r, edge.b.c] };
 
-  let released = false;
-  const release = () => {
-    if (!released) {
-      released = true;
-      setIsSending(false);
-    }
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        setIsSending(false);
+      }
+    };
+
+    // Safety net: release if nothing comes back
+    const guard = setTimeout(release, 600);
+
+    sRef.current?.emit("game.move", payload, (resp?: { ok?: true; error?: string }) => {
+      clearTimeout(guard);
+      if (resp?.error) {
+        // ✅ Show the server's validation message
+        showToast(resp.error);
+        release();
+        return;
+      }
+    });
   };
-
-  // Safety net: release if nothing comes back
-  const guard = setTimeout(release, 600);
-
-  sRef.current?.emit("game.move", payload, (resp?: { ok?: true; error?: string }) => {
-    clearTimeout(guard);
-    if (resp?.error) {
-      // ✅ Show the server's validation message
-      showToast(resp.error);
-      release();
-      return;
-    }
-    // On success we usually get game.state broadcast shortly after; if not, still released by guard.
-    // If you want instant release, uncomment next line:
-    // release();
-  });
-};
 
 
   // Chat send helpers (with ack + roomId)
@@ -559,8 +604,8 @@ const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number }
                     state.finished
                       ? "none"
                       : state.currentPlayer === playerId
-                      ? "0 0 0 3px rgba(43,84,255,0.35)"
-                      : "0 0 0 1px rgba(255,255,255,0.08)",
+                        ? "0 0 0 3px rgba(43,84,255,0.35)"
+                        : "0 0 0 1px rgba(255,255,255,0.08)",
                   transition: "box-shadow 180ms ease",
                   maxWidth: "100%",
                   overflowX: "auto",
@@ -585,7 +630,7 @@ const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number }
                 open={!!state.finished}
                 scores={state.scores || {}}
                 colors={colors}
-                onClose={() => {}}
+                onClose={() => { }}
               />
             </div>
 
@@ -651,9 +696,21 @@ const onMove = (edge: { a: { r: number; c: number }; b: { r: number; c: number }
         )}
       </div>
 
+      {!soundReady && (
+        <div style={{
+          position: "fixed", bottom: 14, right: 14, zIndex: 50,
+          background: "#101738", border: "1px solid #24306b", borderRadius: 10, padding: "8px 12px"
+        }}>
+          <span style={{ marginRight: 8 }}>🔊 Enable sound</span>
+          <button onClick={unlockAudio} style={{ padding: "6px 10px" }}>Allow</button>
+        </div>
+      )}
+
       {/* Sounds (click + score) */}
-      <audio ref={clickAudioRef} preload="auto" src="data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAA..." />
-      <audio ref={scoreAudioRef} preload="auto" src="data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAA..." />
+
+      <audio ref={clickAudioRef} preload="auto" src="/audio/click.mp3" />
+      <audio ref={scoreAudioRef} preload="auto" src="/audio/score.mp3" />
+      <audio ref={turnAudioRef} preload="auto" src="/audio/chance.mp3" />
 
       <Toast message={toast.msg} show={toast.show} onHide={() => setToast({ show: false, msg: "" })} />
     </div>

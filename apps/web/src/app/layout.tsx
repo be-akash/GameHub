@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata,Viewport  } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -15,8 +15,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "GameHub",
   description: "Multiplayer Dots & Boxes",
-  viewport: "width=device-width, initial-scale=1, maximum-scale=1",
   manifest: "/manifest.webmanifest"
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  themeColor: "#0b1020",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

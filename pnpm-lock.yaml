@@ -8,12 +8,21 @@ importers:
 
   .:
     devDependencies:
+      '@types/react':
+        specifier: ^19.2.2
+        version: 19.2.2
+      '@types/react-dom':
+        specifier: ^19.2.2
+        version: 19.2.2(@types/react@19.2.2)
       prettier:
         specifier: ^3.6.2
         version: 3.6.2
       turbo:
         specifier: ^2.6.0
         version: 2.6.0
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
 
   apps/server:
     dependencies:
@@ -71,10 +80,10 @@ importers:
         specifier: ^20.19.24
         version: 20.19.24
       '@types/react':
-        specifier: ^19
+        specifier: ^19.2.2
         version: 19.2.2
       '@types/react-dom':
-        specifier: ^19
+        specifier: ^19.2.2
         version: 19.2.2(@types/react@19.2.2)
       babel-plugin-react-compiler:
         specifier: 1.0.0

@@ -19,7 +19,7 @@ export default function DotsBoard({
   currentPlayer,
   myPlayerId,
   colors = {},
-  disabled = false,           // 👈 NEW
+  disabled = false,          
   onMove,
 }: {
   rows: number;
@@ -30,7 +30,7 @@ export default function DotsBoard({
   currentPlayer: string;
   myPlayerId: string;
   colors?: Record<string, string>;
-  disabled?: boolean;         // 👈 NEW
+  disabled?: boolean;         
   onMove: (edge: Edge) => void;
 }) {
   const cell = 40;

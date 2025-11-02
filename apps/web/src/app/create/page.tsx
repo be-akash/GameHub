@@ -9,14 +9,14 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4002";
 export default function CreatePage() {
   const router = useRouter();
 
-  const [size, setSize] = useState(8); // 5..40
+  const [size, setSize] = useState(5); // 5..40
   const [p1, setP1] = useState("p1");
   const [p2, setP2] = useState("p2");
   const [c1, setC1] = useState("#2b54ff");
   const [c2, setC2] = useState("#ff3b3b");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [chatEnabled, setChatEnabled] = useState(true);
+  const [chatEnabled, setChatEnabled] = useState(false);
 
   // post-create UI
   const [roomId, setRoomId] = useState<string | null>(null);
