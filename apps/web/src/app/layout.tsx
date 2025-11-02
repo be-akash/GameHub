@@ -1,6 +1,7 @@
-import type { Metadata,Viewport  } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import ServiceWorkerProvider from "./ServiceWorkerProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -15,7 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "GameHub",
   description: "Multiplayer Dots & Boxes",
-  manifest: "/manifest.webmanifest"
+  manifest: "/manifest.webmanifest",
 };
 
 export const viewport: Viewport = {
@@ -27,18 +28,12 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>
-        {children}
-        <script dangerouslySetInnerHTML={{
-          __html: `
-            if ('serviceWorker' in navigator) {
-              window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js').catch(()=>{});
-              });
-            }
-          `
-        }} />
+        {/* IMPORTANT: Only register SW here via the provider (no inline <script>) */}
+        <ServiceWorkerProvider>
+          {children}
+        </ServiceWorkerProvider>
       </body>
     </html>
   );
