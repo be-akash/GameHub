@@ -810,7 +810,7 @@ export default function PlayBody() {
                         : "0 0 0 1px rgba(255,255,255,0.08)",
                   transition: "box-shadow 180ms ease",
                   maxWidth: "100%",
-                  overflowX: "auto",
+                  overflowX: "visible",
                   background: "transparent",
                 }}
               >

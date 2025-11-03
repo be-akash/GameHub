@@ -337,9 +337,11 @@ export default function DotsBoard({
       ref={containerRef}
       style={{
         // Make the container square and responsive. Parent width controls overall size.
-        width: "min(92vw, 920px)",
+        width: "min(65svw, 65svh)",
         aspectRatio: "1 / 1",
         position: "relative",
+        overflow: "hidden",
+        touchAction: "none",
       }}
     >
       {/* Base SVG occupies the square */}
