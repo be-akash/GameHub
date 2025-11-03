@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /** Minimal types */
 type Point = { r: number; c: number };
@@ -65,13 +65,41 @@ export default function DotsBoard({
 }) {
   const myTurn = currentPlayer === myPlayerId;
 
-  // Layout (rows/cols are BOX counts; dots = boxes + 1)
-  const cell = 48, pad = 18, dotR = 5;
-  const rowsDots = rows + 1, colsDots = cols + 1;
-  const W = cols * cell + pad * 2;
-  const H = rows * cell + pad * 2;
+  /** ———————————————————————————
+   *  Responsive square sizing
+   *  ——————————————————————————— */
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState<number>(480); // square side in px (auto)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      // Keep the board square; take the smaller of width/height if parent constrains height too
+      const w = el.clientWidth || 480;
+      const h = el.clientHeight || w;
+      setSize(Math.min(w, h));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
-  const toXYdot = (p: Point) => ({ x: pad + p.c * cell, y: pad + p.r * cell });
+  // padding scales lightly with size
+  const pad = Math.max(12, Math.round(size * 0.035)); // px padding inside svg
+  const rowsDots = rows + 1;
+  const colsDots = cols + 1;
+
+  // Use separate cellX / cellY so non-square grids still fill the square
+  const innerW = Math.max(1, size - 2 * pad);
+  const innerH = Math.max(1, size - 2 * pad);
+  const cellX = innerW / Math.max(1, cols);
+  const cellY = innerH / Math.max(1, rows);
+
+  // Dot radius and stroke widths scale with size
+  const dotR = Math.max(3, Math.min(7, Math.round(Math.min(cellX, cellY) * 0.12)));
+  const takenStroke = Math.max(4, Math.round(Math.min(cellX, cellY) * 0.22));
+  const idleStroke = Math.max(6, Math.round(Math.min(cellX, cellY) * 0.34));
+
+  const toXYdot = (p: Point) => ({ x: pad + p.c * cellX, y: pad + p.r * cellY });
 
   // Base edge candidates (in DOT space)
   const candidates = useMemo(() => {
@@ -100,31 +128,39 @@ export default function DotsBoard({
     return out;
   }, [rows, cols, owners]);
 
-  // ===== Overlay via Web Animations API (WAAPI) =====
+  /** ———————————————————————————
+   *  Overlay via Web Animations API (WAAPI)
+   *  ——————————————————————————— */
   const overlayRef = useRef<HTMLDivElement | null>(null);
-  const seenBurnKeysRef = useRef<Set<string>>(new Set());
-  const seenBlastKeysRef = useRef<Set<string>>(new Set());
 
-  function playBurnFromPoints(a: Point, b: Point, dur = 2000) {
+  // Keep track of the currently persistent burn so we can clear it on the next move
+  const persistentBurnElsRef = useRef<HTMLElement[]>([]);
+  function clearPersistentBurns() {
+    const els = persistentBurnElsRef.current;
+    for (const el of els) {
+      try {
+        el.getAnimations().forEach(a => a.cancel());
+        el.remove();
+      } catch { }
+    }
+    persistentBurnElsRef.current = [];
+  }
+
+  // Persistent burn: pulses indefinitely until we clear it when the *next* edge is added
+  function playBurnPersistent(a: Point, b: Point) {
     const ov = overlayRef.current; if (!ov) return;
     const A = toXYdot(a), B = toXYdot(b);
-
-    // Are we horizontal or vertical? (Game edges are orthogonal)
     const isHorizontal = a.r === b.r;
     const isVertical = a.c === b.c;
 
-    const dx = B.x - A.x;
-    const dy = B.y - A.y;
-    const len = Math.hypot(dx, dy);
-
-    // Center point
+    const lenX = Math.abs(B.x - A.x);
+    const lenY = Math.abs(B.y - A.y);
     const midX = (A.x + B.x) / 2;
     const midY = (A.y + B.y) / 2;
 
     const el = document.createElement("div");
     el.style.position = "absolute";
-    el.style.left = "0";
-    el.style.top = "0";
+    el.style.left = "0"; el.style.top = "0";
     el.style.borderRadius = "999px";
     el.style.background = "linear-gradient(90deg, rgba(255,180,0,0.6), #ff6a00, rgba(255,180,0,0.6))";
     el.style.boxShadow = "0 0 10px rgba(255,90,0,0.9), 0 0 18px rgba(255,160,0,0.8)";
@@ -132,43 +168,43 @@ export default function DotsBoard({
     el.style.willChange = "opacity, filter, transform";
 
     if (isHorizontal) {
-      // width along X, fixed height
-      el.style.width = `${len}px`;
-      el.style.height = `10px`;
-      el.style.transform = `translate(${Math.round(midX)}px, ${Math.round(midY)}px) translate(-50%, -50%)`;
+      el.style.width = `${lenX}px`;
+      el.style.height = `${Math.max(8, Math.round(Math.min(cellX, cellY) * 0.22))}px`;
     } else if (isVertical) {
-      // height along Y, fixed width — NO rotation
-      el.style.width = `10px`;
-      el.style.height = `${len}px`;
-      el.style.transform = `translate(${Math.round(midX)}px, ${Math.round(midY)}px) translate(-50%, -50%)`;
+      el.style.width = `${Math.max(8, Math.round(Math.min(cellX, cellY) * 0.22))}px`;
+      el.style.height = `${lenY}px`;
     } else {
-      // (Shouldn't happen in Dots & Boxes, but keep a safe fallback)
-      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
-      el.style.width = `${len}px`;
-      el.style.height = `10px`;
-      el.style.transform = `translate(${midX}px, ${midY}px) rotate(${angle}deg) translate(-50%, -50%)`;
+      // not expected in Dots & Boxes, but safe fallback: treat as horizontal
+      el.style.width = `${Math.hypot(B.x - A.x, B.y - A.y)}px`;
+      el.style.height = `${Math.max(8, Math.round(Math.min(cellX, cellY) * 0.22))}px`;
     }
+    el.style.transform = `translate(${Math.round(midX)}px, ${Math.round(midY)}px) translate(-50%, -50%)`;
 
     ov.appendChild(el);
 
+    // Pulse indefinitely
     const anim = el.animate(
       [
-        { opacity: 1, filter: "saturate(1)" },
-        { opacity: 0.9, filter: "saturate(1.2)", offset: 0.4 },
-        { opacity: 0.6, filter: "saturate(1.1)", offset: 0.75 },
-        { opacity: 0, filter: "saturate(1)" },
+        { opacity: 0.85, filter: "saturate(1.0)" },
+        { opacity: 1.0, filter: "saturate(1.2)" },
+        { opacity: 0.85, filter: "saturate(1.0)" },
       ],
-      { duration: dur, easing: "ease-out", fill: "forwards" }
+      { duration: 900, easing: "ease-in-out", iterations: Infinity }
     );
-    anim.onfinish = () => el.remove();
-    setTimeout(() => el.remove(), dur + 1000);
+
+    persistentBurnElsRef.current.push(el);
+
+    // Safety: if something goes wrong, hard remove after 2 minutes
+    setTimeout(() => {
+      try { anim.cancel(); el.remove(); } catch { }
+    }, 120000);
   }
 
-
+  // One-shot blast (unchanged: ~1s)
   function playBlastAtBox(r: number, c: number, dur = 1000) {
     const ov = overlayRef.current; if (!ov) return;
-    const x = pad + c * cell + cell / 2;
-    const y = pad + r * cell + cell / 2;
+    const x = pad + c * cellX + cellX / 2;
+    const y = pad + r * cellY + cellY / 2;
 
     const el = document.createElement("div");
     el.style.position = "absolute";
@@ -195,18 +231,28 @@ export default function DotsBoard({
     setTimeout(() => el.remove(), dur + 1000);
   }
 
-  // ===== Animate from PlayBody-provided highlight maps (if present) =====
+  /** ———————————————————————————
+   *  Animate from PlayBody-provided highlight maps (if present)
+   *  (We also do internal diffs further below.)
+   *  ——————————————————————————— */
+  const seenBurnKeysRef = useRef<Set<string>>(new Set());
+  const seenBlastKeysRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!edgeHighlights) return;
     const keys = Array.from(edgeHighlights.keys?.() || []);
-    for (const k of keys) {
-      if (seenBurnKeysRef.current.has(k)) continue;
-      const parsed = parseEdgeKey(k);
-      if (!parsed) continue;
+    if (!keys.length) return;
+
+    // A new edge highlight arrived: clear previous persistent burns, show only the newest key
+    clearPersistentBurns();
+    const k = keys[keys.length - 1];
+    const parsed = parseEdgeKey(k);
+    if (parsed) {
       seenBurnKeysRef.current.add(k);
-      playBurnFromPoints(parsed[0], parsed[1], 2000);
-      setTimeout(() => seenBurnKeysRef.current.delete(k), 2400);
+      playBurnPersistent(parsed[0], parsed[1]);
     }
+    // Clean seen set after a short while to allow re-highlighting the same key
+    setTimeout(() => seenBurnKeysRef.current.delete(k), 5000);
   }, [edgeHighlights, rowsDots, colsDots]);
 
   useEffect(() => {
@@ -224,24 +270,34 @@ export default function DotsBoard({
     }
   }, [boxHighlights, rows, cols]);
 
-  // ===== ALSO animate by diffing incoming props (works even without highlight maps) =====
+  /** ———————————————————————————
+   *  ALSO animate by diffing incoming props (works even without highlight maps)
+   *  ——————————————————————————— */
   const prevEdgesRef = useRef<Set<string>>(new Set());
   const prevBoxesRef = useRef<Set<string>>(new Set());
 
-  // Edge diff (newly added edges)
+  // Edge diff (newly added edges) — persistent until next edge
   useEffect(() => {
     const current = new Set(Object.keys(edges || {}));
     const prev = prevEdgesRef.current;
-    for (const k of current) {
-      if (!prev.has(k)) {
-        const parsed = parseEdgeKey(k);
-        if (parsed) playBurnFromPoints(parsed[0], parsed[1], 2000);
-      }
+
+    // find keys present now but not before
+    const addedNow: string[] = [];
+    for (const k of current) if (!prev.has(k)) addedNow.push(k);
+
+    if (addedNow.length) {
+      // Only keep the latest edge’s glow visible
+      clearPersistentBurns();
+      // take the last added (in case multiple arrive at once)
+      const last = addedNow[addedNow.length - 1];
+      const parsed = parseEdgeKey(last);
+      if (parsed) playBurnPersistent(parsed[0], parsed[1]);
     }
+
     prevEdgesRef.current = current;
   }, [edges, rowsDots, colsDots]);
 
-  // Box diff (newly claimed boxes)
+  // Box diff (newly claimed boxes) — 1s blast
   useEffect(() => {
     let currentKeys: string[] = [];
     if (Array.isArray(owners)) {
@@ -261,6 +317,7 @@ export default function DotsBoard({
     }
     const current = new Set(currentKeys);
     const prev = prevBoxesRef.current;
+
     for (const k of current) {
       if (!prev.has(k)) {
         const [rs, cs] = k.split(",");
@@ -272,22 +329,38 @@ export default function DotsBoard({
     prevBoxesRef.current = current;
   }, [owners, rows, cols]);
 
+  /** ———————————————————————————
+   *  Render
+   *  ——————————————————————————— */
   return (
-    <div style={{ position: "relative", width: W, height: H }}>
-      {/* === Base SVG board (cells under, then edges, then dots) === */}
-      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} aria-label="Dots and Boxes board">
-        <rect x={0} y={0} width={W} height={H} fill="transparent" />
+    <div
+      ref={containerRef}
+      style={{
+        // Make the container square and responsive. Parent width controls overall size.
+        width: "min(92vw, 920px)",
+        aspectRatio: "1 / 1",
+        position: "relative",
+      }}
+    >
+      {/* Base SVG occupies the square */}
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-label="Dots and Boxes board">
+        <rect x={0} y={0} width={size} height={size} fill="transparent" />
 
         {/* Cells (fills under edges) */}
         {cells.map(({ r, c, key, owner }) => {
           if (!owner) return null;
-          const x = pad + c * cell, y = pad + r * cell;
+          const x = pad + c * cellX, y = pad + r * cellY;
           const fill = colors[owner] || "#22c55e";
           return (
             <rect
               key={`cell-${key}`}
-              x={x + 6} y={y + 6} width={cell - 12} height={cell - 12}
-              fill={fill} opacity={0.22} rx={8}
+              x={x + Math.max(3, cellX * 0.12)}
+              y={y + Math.max(3, cellY * 0.12)}
+              width={Math.max(2, cellX - Math.max(6, cellX * 0.24))}
+              height={Math.max(2, cellY - Math.max(6, cellY * 0.24))}
+              fill={fill}
+              opacity={0.22}
+              rx={Math.min(12, Math.round(Math.min(cellX, cellY) * 0.25))}
             />
           );
         })}
@@ -304,13 +377,14 @@ export default function DotsBoard({
           const baseHover = "rgba(255,255,255,0.40)";
           const takenClr = (owner && colors[owner]) || "#9ab4ff";
           const stroke = taken ? takenClr : baseIdle;
+          const width = taken ? takenStroke : idleStroke;
 
           return (
             <line
               key={`edge-${i}`}
               x1={a.x} y1={a.y} x2={b.x} y2={b.y}
               stroke={stroke}
-              strokeWidth={taken ? 6 : 10}
+              strokeWidth={width}
               strokeLinecap="round"
               style={{ cursor: clickable ? "pointer" : "default", transition: "stroke 160ms ease" }}
               onClick={() => { if (clickable) onMove(e); }}
@@ -320,11 +394,11 @@ export default function DotsBoard({
           );
         })}
 
-        {/* Dots */}
+        {/* Dots (grey) */}
         {Array.from({ length: rowsDots }).map((_, r) =>
           Array.from({ length: colsDots }).map((__, c) => {
             const { x, y } = toXYdot({ r, c });
-            return <circle key={`dot-${r}-${c}`} cx={x} cy={y} r={dotR} fill="#fff" opacity={0.9} />;
+            return <circle key={`dot-${r}-${c}`} cx={x} cy={y} r={dotR} fill="#9ca3af" opacity={0.95} />;
           })
         )}
       </svg>
