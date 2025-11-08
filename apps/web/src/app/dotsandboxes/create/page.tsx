@@ -28,8 +28,8 @@ export default function CreatePage() {
 
   const urlFor = (asName: string) =>
     typeof window !== "undefined"
-      ? `${window.location.origin}/play?room=${roomId}&as=${encodeURIComponent(asName)}`
-      : `/play?room=${roomId}&as=${encodeURIComponent(asName)}`;
+      ? `${window.location.origin}/dotsandboxes/play?room=${roomId}&as=${encodeURIComponent(asName)}`
+      : `/dotsandboxes/play?room=${roomId}&as=${encodeURIComponent(asName)}`;
 
   async function handleCreate() {
     setError(null);
@@ -190,7 +190,7 @@ export default function CreatePage() {
                   {urlFor(p1)}
                 </code>
                 <button onClick={() => copy(urlFor(p1), `${p1} link`)}>Copy</button>
-                <button onClick={() => router.replace(`/play?room=${roomId}&as=${encodeURIComponent(p1)}`)}>
+                <button onClick={() => router.replace(`/dotsandboxes/play?room=${roomId}&as=${encodeURIComponent(p1)}`)}>
                   Open & Play
                 </button>
               </div>

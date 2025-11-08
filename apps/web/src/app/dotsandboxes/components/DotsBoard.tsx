@@ -45,10 +45,9 @@ export default function DotsBoard({
   colors = {},
   disabled = false,
   onMove,
-
-  // Optional: highlights from PlayBody (we also do internal diffs)
   edgeHighlights,
   boxHighlights,
+  finished,
 }: {
   rows: number; cols: number;
   edges: Record<string, 1>;
@@ -59,11 +58,22 @@ export default function DotsBoard({
   colors?: Record<string, string>;
   disabled?: boolean;
   onMove: (edge: Edge) => void;
-
   edgeHighlights?: Map<string, number>;
   boxHighlights?: Map<string, number>;
+  finished?: boolean;
 }) {
   const myTurn = currentPlayer === myPlayerId;
+
+  const prevFinishedRef = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    if (!overlayRef.current) return;
+    if (finished && !prevFinishedRef.current) {
+      // mega burst on win
+      fireConfetti(overlayRef.current, 140, 2.0);
+    }
+    prevFinishedRef.current = finished;
+  }, [finished]);
+
 
   /** ———————————————————————————
    *  Responsive square sizing
@@ -231,6 +241,59 @@ export default function DotsBoard({
     setTimeout(() => el.remove(), dur + 1000);
   }
 
+  function fireConfetti(host: HTMLElement, count: number, power = 1) {
+    const rect = host.getBoundingClientRect();
+    const centerX = rect.width / 2;
+    const originY = rect.height * 0.25;
+
+    for (let i = 0; i < count; i++) {
+      const piece = document.createElement("div");
+      piece.style.position = "absolute";
+      piece.style.left = `${centerX}px`;
+      piece.style.top = `${originY}px`;
+      piece.style.width = "6px";
+      piece.style.height = "10px";
+      piece.style.background = `hsl(${Math.floor(Math.random() * 360)}, 90%, 60%)`;
+      piece.style.borderRadius = "2px";
+      piece.style.pointerEvents = "none";
+      piece.style.willChange = "transform, opacity";
+
+      const angle = (Math.random() * Math.PI) - Math.PI / 2; // left/right spread
+      const speed = (3 + Math.random() * 5) * power;
+      const vx = Math.cos(angle) * speed;
+      const vy0 = (Math.sin(angle) - 1.2) * speed; // bias upward
+      const rotate = (Math.random() * 2 - 1) * 0.15;
+
+      host.appendChild(piece);
+
+      let x = 0, y = 0, vy = vy0, opacity = 1, t = 0;
+      const gravity = 0.18 * power;
+      const life = 900 + Math.random() * 600;
+
+      function step(ts: number) {
+        if (!t) t = ts;
+        const dt = ts - t;
+        t = ts;
+
+        vy += gravity;
+        x += vx;
+        y += vy;
+        opacity -= dt / life;
+
+        piece.style.transform = `translate(${x}px, ${y}px) rotate(${rotate * y}rad)`;
+        piece.style.opacity = `${Math.max(0, opacity)}`;
+
+        if (opacity > 0 && y < rect.height + 40) {
+          requestAnimationFrame(step);
+        } else {
+          piece.remove();
+        }
+      }
+      requestAnimationFrame(step);
+    }
+  }
+
+
   /** ———————————————————————————
    *  Animate from PlayBody-provided highlight maps (if present)
    *  (We also do internal diffs further below.)
@@ -328,6 +391,49 @@ export default function DotsBoard({
     }
     prevBoxesRef.current = current;
   }, [owners, rows, cols]);
+
+  // Box diff (newly claimed boxes) — blasts per box + confetti for chains
+  useEffect(() => {
+    let currentKeys: string[] = [];
+    if (Array.isArray(owners)) {
+      for (let r = 0; r < owners.length; r++) {
+        const row = owners[r] || [];
+        for (let c = 0; c < row.length; c++) {
+          const v = row[c];
+          if (v !== undefined && v !== null && `${v}` !== "") currentKeys.push(cellKey(r, c));
+        }
+      }
+    } else {
+      const map = owners as OwnersMap;
+      currentKeys = Object.keys(map).filter((k) => {
+        const v = map[k];
+        return v !== undefined && v !== null && `${v}` !== "";
+      });
+    }
+    const current = new Set(currentKeys);
+    const prev = prevBoxesRef.current;
+
+    let addedCount = 0;
+
+    for (const k of current) {
+      if (!prev.has(k)) {
+        addedCount++;
+        const [rs, cs] = k.split(",");
+        const r = parseInt(rs || "0", 10);
+        const c = parseInt(cs || "0", 10);
+        if (!Number.isNaN(r) && !Number.isNaN(c)) playBlastAtBox(r, c, 1000);
+      }
+    }
+
+    // chain celebration: 1–2 small, 3+ big
+    if (addedCount > 0 && overlayRef.current) {
+      const big = addedCount >= 3;
+      fireConfetti(overlayRef.current, big ? 80 : 35, big ? 1.6 : 1.0);
+    }
+
+    prevBoxesRef.current = current;
+  }, [owners, rows, cols]);
+
 
   /** ———————————————————————————
    *  Render

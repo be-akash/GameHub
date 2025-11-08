@@ -368,7 +368,7 @@ export default function PlayBody() {
 
       // Now join locally and update our URL
       joinRoom(newRoomId, playerId, { pushUrl: false });
-      router.replace(`/play?room=${newRoomId}&as=${encodeURIComponent(playerId)}`);
+      router.replace(`/dotsandboxes/play?room=${newRoomId}&as=${encodeURIComponent(playerId)}`);
     } catch (e) {
       setToast({ show: true, msg: "Rematch failed" });
     }
@@ -604,7 +604,7 @@ export default function PlayBody() {
       if (!newId) return;
       // Join as the same player name and update URL
       joinRoom(newId, playerId, { pushUrl: false });
-      router.replace(`/play?room=${newId}&as=${encodeURIComponent(playerId)}`);
+      router.replace(`/dotsandboxes/play?room=${newId}&as=${encodeURIComponent(playerId)}`);
     });
 
 
@@ -700,7 +700,7 @@ export default function PlayBody() {
       const data = await res.json();
       if (!data.roomId) return showToast("Failed to create room");
       setRoomId(data.roomId);
-      router.replace(`/play?room=${data.roomId}&as=${encodeURIComponent("p1")}`);
+      router.replace(`/dotsandboxes/play?room=${data.roomId}&as=${encodeURIComponent("p1")}`);
       joinRoom(data.roomId, "p1", { pushUrl: false });
     } catch {
       showToast("Error creating room");
@@ -744,7 +744,7 @@ export default function PlayBody() {
     const url =
       typeof window !== "undefined"
         ? `${window.location.origin}/play?room=${roomId}&as=${as}`
-        : `/play?room=${roomId}&as=${as}`;
+        : `/dotsandboxes/play?room=${roomId}&as=${as}`;
     navigator.clipboard.writeText(url).then(
       () => showToast(`Copied invite link (${decodeURIComponent(as)})`),
       () => showToast("Copy failed")
@@ -1107,6 +1107,7 @@ export default function PlayBody() {
                   disabled={isSending || state.finished}
                   edgeHighlights={edgeHighlights}
                   boxHighlights={boxHighlights}
+                  finished={state.finished}
                 />
 
                 {/* <span title="Edges highlighted for burn">🔥 edges: {edgeHighlights.size}</span>

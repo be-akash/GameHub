@@ -33,16 +33,16 @@ export default function HomePage() {
             >
               Play
             </Link> */}
-            <Link href="/create" style={{
-                display: "inline-block",
-                marginTop: 10,
-                padding: "10px 14px",
-                borderRadius: 10,
-                background: "#2b54ff",
-                color: "white",
-                textDecoration: "none",
-                fontWeight: 600,
-              }}>Create custom game</Link>
+            <Link href="/dotsandboxes/create" style={{
+              display: "inline-block",
+              marginTop: 10,
+              padding: "10px 14px",
+              borderRadius: 10,
+              background: "#2b54ff",
+              color: "white",
+              textDecoration: "none",
+              fontWeight: 600,
+            }}>Create custom game</Link>
           </article>
 
           {/* Future games go here as more <article> cards */}
