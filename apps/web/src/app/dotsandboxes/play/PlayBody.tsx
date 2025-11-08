@@ -717,7 +717,7 @@ export default function PlayBody() {
       setJoined(true);
       setRoomId(room);
       setPlayerId(who);
-      if (opts.pushUrl !== false) router.replace(`/play?room=${room}&as=${encodeURIComponent(who)}`);
+      if (opts.pushUrl !== false) router.replace(`/dotsandboxes/play?room=${room}&as=${encodeURIComponent(who)}`);
       fetchRoomMeta(room);
       showToast(`Joined as ${who}`);
     };
