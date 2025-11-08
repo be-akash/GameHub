@@ -3,6 +3,7 @@ import { Server as IOServer } from "socket.io";
 import Redis from "ioredis";
 import type { GameDefinition } from "@dashanddots/shared";
 import { getGame } from "../core/game-registry.js";
+import { undoLastMove as undoDots } from "../games/dots-and-boxes.js";
 
 export const occupancy = new Map<string, Map<string, string>>();
 export let ioRef: IOServer | null = null;
@@ -32,6 +33,11 @@ type RoomState = {
     chatEnabled?: boolean;
     locked?: boolean;
     owner?: string;
+    pendingUndo?: {
+      requestedBy: string;
+      targetRevision: number;
+      expiresAt: number;
+    };
   };
 };
 
@@ -138,6 +144,168 @@ export function attachSocket(
         }
       }
     );
+
+    // === UNDO: fast self-undo (still player's turn) ===
+    socket.on(
+      "game.undo",
+      async (_payload: { expectedRevision: number }, ack?: (resp: { ok?: true; error?: string }) => void) => {
+        // We don’t do fast self-undo anymore. Always require approval,
+        // and only last mover can request it.
+        const respond = (r: { ok?: true; error?: string }) => { try { ack?.(r); } catch { } };
+
+        try {
+          const roomId = socket.data?.roomId as string | undefined;
+          const playerId = socket.data?.playerId as string | undefined;
+          if (!roomId || !playerId) return respond({ error: "Not in a room" });
+
+          const raw = await redis.get(roomKey(roomId));
+          if (!raw) return respond({ error: "Room vanished" });
+          const cur: RoomState = JSON.parse(raw);
+
+          if (cur.gameId !== "dots-and-boxes") return respond({ error: "Undo not supported for this game" });
+          const st = cur.state || {};
+          const last = st.lastMove;
+
+          if (!last || last.playerId !== playerId) {
+            return respond({ error: "not_last_mover" });
+          }
+
+          // Reuse the same code path as "game.undo.request"
+          const opponent = (st.players || []).find((p: string) => p !== playerId);
+          if (!opponent) return respond({ error: "no_opponent" });
+
+          cur.meta = cur.meta || {};
+          cur.meta.pendingUndo = {
+            requestedBy: playerId,
+            targetRevision: st.revision ?? 0,
+            expiresAt: Date.now() + 30_000, // or just Date.now() + 1 if you don't want timers; server won’t enforce
+          };
+
+          await redis.set(roomKey(roomId), JSON.stringify(cur));
+          await redis.expire(roomKey(roomId), 60 * 60 * 24);
+
+          io.to(roomId).emit("undo.request", { from: playerId, expiresAt: cur.meta.pendingUndo.expiresAt });
+          io.to(roomId).emit("chat.system", { text: `${playerId} requested an undo`, at: Date.now() });
+
+          return respond({ ok: true });
+        } catch (e) {
+          console.error("[game.undo] error", e);
+          return respond({ error: "Undo failed" });
+        }
+      }
+    );
+
+
+    // === UNDO: request approval (opponent must approve) ===
+    socket.on(
+      "game.undo.request",
+      async (payload: { expectedRevision: number }, ack?: (resp: { ok?: true; error?: string }) => void) => {
+        const respond = (r: { ok?: true; error?: string }) => { try { ack?.(r); } catch { } };
+        try {
+          const roomId = socket.data?.roomId as string | undefined;
+          const playerId = socket.data?.playerId as string | undefined;
+          if (!roomId || !playerId) return respond({ error: "Not in a room" });
+
+          const raw = await redis.get(roomKey(roomId));
+          if (!raw) return respond({ error: "Room vanished" });
+          const cur: RoomState = JSON.parse(raw);
+
+          if (cur.gameId !== "dots-and-boxes") return respond({ error: "Undo not supported for this game" });
+
+          const expectedRevision = payload?.expectedRevision ?? -1;
+          const st = cur.state || {};
+          if (typeof st.revision !== "number") return respond({ error: "State missing revision" });
+          if (expectedRevision !== st.revision) return respond({ error: "out_of_date" });
+
+          const opponent = (st.players || []).find((p: string) => p !== playerId);
+          if (!opponent) return respond({ error: "no_opponent" });
+
+          // Store pending request in room meta
+          cur.meta = cur.meta || {};
+          cur.meta.pendingUndo = {
+            requestedBy: playerId,
+            targetRevision: st.revision,
+            expiresAt: Date.now() + 30_000, // 30s
+          };
+
+          const last = st.lastMove;
+          if (!last || last.playerId !== playerId) {
+            return respond({ error: "not_last_mover" });
+          }
+
+
+          await redis.set(roomKey(roomId), JSON.stringify(cur));
+          await redis.expire(roomKey(roomId), 60 * 60 * 24);
+
+          io.to(roomId).emit("undo.request", { from: playerId, expiresAt: cur.meta.pendingUndo.expiresAt });
+          io.to(roomId).emit("chat.system", { text: `${playerId} requested an undo`, at: Date.now() });
+          return respond({ ok: true });
+        } catch (e) {
+          console.error("[game.undo.request] error", e);
+          return respond({ error: "Request failed" });
+        }
+      }
+    );
+
+    // === UNDO: approval response ===
+    socket.on(
+      "game.undo.respond",
+      async (payload: { approve: boolean }, ack?: (resp: { ok?: true; error?: string }) => void) => {
+        const respond = (r: { ok?: true; error?: string }) => { try { ack?.(r); } catch { } };
+        try {
+          const roomId = socket.data?.roomId as string | undefined;
+          const playerId = socket.data?.playerId as string | undefined;
+          if (!roomId || !playerId) return respond({ error: "Not in a room" });
+
+          const raw = await redis.get(roomKey(roomId));
+          if (!raw) return respond({ error: "Room vanished" });
+          const cur: RoomState = JSON.parse(raw);
+
+          const meta = cur.meta || {};
+          const pending = meta.pendingUndo;
+          if (!pending) return respond({ error: "no_pending_request" });
+          if (Date.now() > pending.expiresAt) {
+            meta.pendingUndo = undefined;
+            cur.meta = meta;
+            await redis.set(roomKey(roomId), JSON.stringify(cur));
+            await redis.expire(roomKey(roomId), 60 * 60 * 24);
+            return respond({ error: "expired" });
+          }
+          if (playerId === pending.requestedBy) {
+            return respond({ error: "not_authorized" });
+          }
+
+          if (!payload?.approve) {
+            meta.pendingUndo = undefined;
+            cur.meta = meta;
+            await redis.set(roomKey(roomId), JSON.stringify(cur));
+            await redis.expire(roomKey(roomId), 60 * 60 * 24);
+
+            io.to(roomId).emit("undo.result", { approved: false, by: playerId });
+            io.to(roomId).emit("chat.system", { text: `${playerId} rejected the undo request`, at: Date.now() });
+            return respond({ ok: true });
+          }
+
+          // Approved → do the undo
+          if (cur.gameId !== "dots-and-boxes") return respond({ error: "Undo not supported for this game" });
+          undoDots(cur.state, 1);
+          meta.pendingUndo = undefined;
+          cur.meta = meta;
+
+          await redis.set(roomKey(roomId), JSON.stringify(cur));
+          await redis.expire(roomKey(roomId), 60 * 60 * 24);
+
+          io.to(roomId).emit("game.state", cur.state);
+          io.to(roomId).emit("undo.result", { approved: true, by: playerId });
+          io.to(roomId).emit("chat.system", { text: `${playerId} approved the undo`, at: Date.now() });
+          return respond({ ok: true });
+        } catch (e) {
+          console.error("[game.undo.respond] error", e);
+          return respond({ error: "Respond failed" });
+        }
+      }
+    );
+
 
     // Chat (respects meta.chatEnabled) with ACK
     socket.on(

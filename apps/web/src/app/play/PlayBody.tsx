@@ -115,6 +115,9 @@ export default function PlayBody() {
 
   // Chat
   const [chat, setChat] = useState<Array<{ from?: string; text: string; at: number; system?: boolean }>>([]);
+  // Undo UI state
+  const [undoRequest, setUndoRequest] = useState<{ from: string; expiresAt: number } | null>(null);
+
   const [msg, setMsg] = useState("");
   const [chatEnabled, setChatEnabled] = useState<boolean>(true);      // from server meta
   const [chatPanelVisible, setChatPanelVisible] = useState<boolean>(true); // local toggle
@@ -339,6 +342,9 @@ export default function PlayBody() {
     s.removeAllListeners("connect");
     s.removeAllListeners("disconnect");
     s.removeAllListeners("room.kicked");
+    s.removeAllListeners("undo.request");
+    s.removeAllListeners("undo.result");
+
 
     s.on("game.state", (st) => {
       const prevTurn = prevTurnRef.current;
@@ -430,6 +436,16 @@ export default function PlayBody() {
           turnAudioRef.current?.play().catch(() => { });
         }
       }
+      // if (undoRequest && Date.now() > undoRequest.expiresAt) {
+      //   setUndoRequest(null);
+      // }
+
+      // Clear stale undo banner if it expired
+      setUndoRequest((prev) => {
+        if (!prev) return prev;
+        return Date.now() > prev.expiresAt ? null : prev;
+      });
+
 
       // Save snapshot for next diff
       prevStateRef.current = st;
@@ -449,6 +465,31 @@ export default function PlayBody() {
       });
       scrollChatToBottom();
     });
+
+    // Opponent requested undo
+    // Opponent requested undo (only opponent should see the banner)
+    s.on("undo.request", (payload: { from: string; expiresAt: number }) => {
+      if (payload.from === playerId) return; // requester should NOT see approve/reject
+      setUndoRequest(payload);
+      showToast(`${payload.from} requested an undo`);
+    });
+
+
+    // Server broadcasted the result of an undo request
+    s.on("undo.result", (payload: { approved: boolean; by: string }) => {
+      if (payload.approved) showToast(`Undo approved by ${payload.by}`);
+      else showToast(`Undo rejected by ${payload.by}`);
+      setUndoRequest(null);
+    });
+
+    // If a new state arrives, clear stale request if it expired
+    // s.on("game.state", (st) => {
+    //   // ... your existing code already here ...
+    //   if (undoRequest && Date.now() > undoRequest.expiresAt) {
+    //     setUndoRequest(null);
+    //   }
+    // });
+
 
     s.on("chat.system", (m) => {
       setChat((old) => {
@@ -486,6 +527,11 @@ export default function PlayBody() {
     setupSocketListeners(s);
     return s;
   }
+
+  function isLastMover(st: any): boolean {
+    return !!st?.lastMove && st.lastMove.playerId === playerId;
+  }
+
 
   async function createRoom() {
     try {
@@ -597,6 +643,35 @@ export default function PlayBody() {
     // after sending, scroll to bottom
     scrollChatToBottom();
   };
+
+  // function canSelfUndo(st: any): boolean {
+  //   if (!st) return false;
+  //   // Fast self-undo allowed only if:
+  //   // - last move exists,
+  //   // - last move was mine, AND
+  //   // - it's still my turn (e.g., I scored and got extra turn)
+  //   return !!st.lastMove && st.lastMove.playerId === playerId && st.currentPlayer === playerId;
+  // }
+
+  function doUndo() {
+    if (!roomId || !state) return;
+    sRef.current?.emit("game.undo", { expectedRevision: state.revision }, (resp?: { ok?: true; error?: string }) => {
+      if (resp?.ok) {
+        showToast("Undo request sent");
+        return;
+      }
+      showToast(resp?.error || "Undo request failed");
+    });
+  }
+
+
+  function respondUndo(approve: boolean) {
+    sRef.current?.emit("game.undo.respond", { approve }, (resp?: { ok?: true; error?: string }) => {
+      if (!resp?.ok) showToast(resp?.error || "Failed to respond");
+      // success/final toast will come from "undo.result"
+    });
+  }
+
 
   return (
     <div style={{ padding: 16, color: "white", background: "#0b1020", minHeight: "100vh" }}>
@@ -794,6 +869,54 @@ export default function PlayBody() {
                     </span>
                   ))}
                 </span>
+                <span style={{ marginLeft: "auto" }}>
+                  {isLastMover(state) && (
+                    <button
+                      onClick={doUndo}
+                      title="Request undo (sends to opponent)"
+                      style={{
+                        padding: "8px 10px",
+                        borderRadius: 8,
+                        border: "1px solid #33406b",
+                        background: "transparent",
+                        color: "#cbd5e1",
+                        opacity: state.finished ? 0.5 : 1,
+                        cursor: state.finished ? "not-allowed" : "pointer",
+                      }}
+                      disabled={state.finished || !joined}
+                    >
+                      Request Undo
+                    </button>
+                  )}
+
+                  {undoRequest && undoRequest.from !== playerId && (
+                    <div
+                      style={{
+                        margin: "8px 0 10px",
+                        background: "#0e1530",
+                        border: "1px solid #24306b",
+                        borderRadius: 10,
+                        padding: 10,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                      }}
+                    >
+                      <span style={{ opacity: 0.85 }}>
+                        <strong>{undoRequest.from}</strong> requested an undo
+                      </span>
+                      <button onClick={() => respondUndo(true)} style={{ padding: "6px 10px" }}>Approve</button>
+                      <button
+                        onClick={() => respondUndo(false)}
+                        style={{ padding: "6px 10px", background: "transparent", border: "1px solid #33406b", color: "#cbd5e1" }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
+                </span>
+
+
               </div>
 
               {/* Board */}

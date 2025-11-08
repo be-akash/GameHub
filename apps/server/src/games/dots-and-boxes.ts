@@ -3,11 +3,18 @@ import { GameDefinition, GameState, MovePayload, MoveResult, PlayerId } from "@d
 export interface DotsState extends GameState {
   rows: number;
   cols: number;
+
+  players: PlayerId[];
+  currentPlayer: PlayerId;
+  finished: boolean;
   edges: Record<string, 1>;
   owners: Record<string, PlayerId | null>;
   remainingEdges: number;
   scores: Record<PlayerId, number>;
   edgeOwners: Record<string, PlayerId>;
+  revision: number;
+  lastMove: { playerId: PlayerId; a: [number, number]; b: [number, number]; ts: number } | null;
+  history: Array<{ playerId: PlayerId; a: [number, number]; b: [number, number]; ts: number }>;
 }
 
 export interface DotsMove extends MovePayload {
@@ -35,6 +42,53 @@ function cellEdges(r: number, c: number) {
   return [top, right, bottom, left];
 }
 
+// === PURE single-move applier (no history/revision writes) ===
+function applyOneMovePure(state: DotsState, move: DotsMove, player: PlayerId) {
+  const k = keyOf(move.a, move.b);
+  state.edges[k] = 1;
+  state.edgeOwners[k] = player;
+
+  let boxesCompleted = 0;
+  const [r1, c1] = move.a, [r2, c2] = move.b;
+  const candidates: Array<[number, number]> = [];
+
+  if (r1 === r2) {
+    const r = r1, cStart = Math.min(c1, c2);
+    if (r > 0) candidates.push([r - 1, cStart]); // cell above
+    if (r < state.rows) candidates.push([r, cStart]); // cell below
+  } else {
+    const c = c1, rStart = Math.min(r1, r2);
+    if (c > 0) candidates.push([rStart, c - 1]); // cell left
+    if (c < state.cols) candidates.push([rStart, c]); // cell right
+  }
+
+  for (const [rr, cc] of candidates) {
+    const complete = cellEdges(rr, cc)
+      .map(([a, b]) => keyOf(a, b))
+      .every(e => !!state.edges[e]);
+    const cellKey = `${rr},${cc}`;
+    if (complete && !state.owners[cellKey]) {
+      state.owners[cellKey] = player;
+      boxesCompleted++;
+    }
+  }
+
+  if (boxesCompleted > 0) {
+    state.scores[player] = (state.scores[player] ?? 0) + boxesCompleted;
+    // extra turn (stay on same player)
+  } else {
+    const idx = state.players.indexOf(state.currentPlayer);
+    state.currentPlayer = state.players[(idx + 1) % state.players.length];
+  }
+
+  const total = (state.rows + 1) * state.cols + (state.cols + 1) * state.rows;
+  state.remainingEdges = total - Object.keys(state.edges).length;
+  if (state.remainingEdges <= 0) state.finished = true;
+
+  return boxesCompleted;
+}
+
+
 export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
   id: "dots-and-boxes",
   name: "Dots & Boxes",
@@ -46,6 +100,7 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
     const cols = Math.max(2, Number(opts?.cols ?? 5));
     const players: PlayerId[] = opts?.players?.length ? opts.players : ["p1", "p2"];
     const totalEdges = (rows + 1) * cols + (cols + 1) * rows;
+
 
     const scores: Record<PlayerId, number> = {};
     players.forEach(p => (scores[p] = 0));
@@ -61,6 +116,9 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
       scores,
       finished: false,
       edgeOwners: {},
+      revision: 0,
+      lastMove: null,
+      history: [],
     };
   },
 
@@ -82,48 +140,16 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
   },
 
   applyMove(state, move, player) {
-    const k = keyOf(move.a, move.b);
-    state.edges[k] = 1;
-    state.edgeOwners[k] = player;
-    // state.remainingEdges--;
+    // record to history
+    const entry = { playerId: player, a: move.a, b: move.b, ts: Date.now() };
+    state.history.push(entry);
 
-    let boxesCompleted = 0;
-    const [r1, c1] = move.a, [r2, c2] = move.b;
-    const candidates: Array<[number, number]> = [];
+    // apply to current state
+    const boxesCompleted = applyOneMovePure(state as DotsState, move, player);
 
-    if (r1 === r2) {
-      const r = r1, cStart = Math.min(c1, c2);
-      if (r > 0) candidates.push([r - 1, cStart]); // cell above
-      if (r < state.rows) candidates.push([r, cStart]); // ✅ cell below (ALLOW r == rows-1)
-    } else {
-      const c = c1, rStart = Math.min(r1, r2);
-      if (c > 0) candidates.push([rStart, c - 1]); // cell left
-      if (c < state.cols) candidates.push([rStart, c]); // ✅ cell right (ALLOW c == cols-1)
-    }
-
-
-    for (const [rr, cc] of candidates) {
-      const complete = cellEdges(rr, cc)
-        .map(([a, b]) => keyOf(a, b))
-        .every(e => !!state.edges[e]);
-      const cellKey = `${rr},${cc}`;
-      if (complete && !state.owners[cellKey]) {
-        state.owners[cellKey] = player;
-        boxesCompleted++;
-      }
-    }
-
-    if (boxesCompleted > 0) {
-      state.scores[player] = (state.scores[player] ?? 0) + boxesCompleted;
-      // extra turn
-    } else {
-      const idx = state.players.indexOf(state.currentPlayer);
-      state.currentPlayer = state.players[(idx + 1) % state.players.length];
-    }
-
-    const total = (state.rows + 1) * state.cols + (state.cols + 1) * state.rows;
-    state.remainingEdges = total - Object.keys(state.edges).length;
-    if (state.remainingEdges <= 0) state.finished = true;
+    // book-keeping
+    state.revision++;
+    state.lastMove = entry;
 
     const result: MoveResult = {
       state,
@@ -131,4 +157,89 @@ export const DotsAndBoxes: GameDefinition<DotsState, DotsMove> = {
     };
     return result;
   },
+
+
+
+
+  // applyMove(state, move, player) {
+  //   const k = keyOf(move.a, move.b);
+  //   state.edges[k] = 1;
+  //   state.edgeOwners[k] = player;
+  //   // state.remainingEdges--;
+
+  //   let boxesCompleted = 0;
+  //   const [r1, c1] = move.a, [r2, c2] = move.b;
+  //   const candidates: Array<[number, number]> = [];
+
+  //   if (r1 === r2) {
+  //     const r = r1, cStart = Math.min(c1, c2);
+  //     if (r > 0) candidates.push([r - 1, cStart]); // cell above
+  //     if (r < state.rows) candidates.push([r, cStart]); // ✅ cell below (ALLOW r == rows-1)
+  //   } else {
+  //     const c = c1, rStart = Math.min(r1, r2);
+  //     if (c > 0) candidates.push([rStart, c - 1]); // cell left
+  //     if (c < state.cols) candidates.push([rStart, c]); // ✅ cell right (ALLOW c == cols-1)
+  //   }
+
+
+  //   for (const [rr, cc] of candidates) {
+  //     const complete = cellEdges(rr, cc)
+  //       .map(([a, b]) => keyOf(a, b))
+  //       .every(e => !!state.edges[e]);
+  //     const cellKey = `${rr},${cc}`;
+  //     if (complete && !state.owners[cellKey]) {
+  //       state.owners[cellKey] = player;
+  //       boxesCompleted++;
+  //     }
+  //   }
+
+  //   if (boxesCompleted > 0) {
+  //     state.scores[player] = (state.scores[player] ?? 0) + boxesCompleted;
+  //     // extra turn
+  //   } else {
+  //     const idx = state.players.indexOf(state.currentPlayer);
+  //     state.currentPlayer = state.players[(idx + 1) % state.players.length];
+  //   }
+
+  //   const total = (state.rows + 1) * state.cols + (state.cols + 1) * state.rows;
+  //   state.remainingEdges = total - Object.keys(state.edges).length;
+  //   if (state.remainingEdges <= 0) state.finished = true;
+
+  //   const result: MoveResult = {
+  //     state,
+  //     events: boxesCompleted ? [{ type: "score", payload: { player, boxes: boxesCompleted } }] : [],
+  //   };
+  //   return result;
+  // },
 };
+
+// === Exported helpers (server can use them for undo) ===
+export function recomputeFromHistory(state: DotsState) {
+  // reset derived state
+  state.edges = {};
+  state.edgeOwners = {};
+  state.owners = {};
+  const freshScores: Record<PlayerId, number> = {};
+  for (const p of state.players) freshScores[p] = 0;
+  state.scores = freshScores;
+  state.currentPlayer = state.players[0];
+  state.finished = false;
+
+  const total = (state.rows + 1) * state.cols + (state.cols + 1) * state.rows;
+  state.remainingEdges = total;
+
+  // replay
+  for (const mv of state.history) {
+    applyOneMovePure(state, { a: mv.a, b: mv.b } as DotsMove, mv.playerId);
+  }
+
+  // update lastMove (may be null)
+  state.lastMove = state.history.length ? state.history[state.history.length - 1] : null;
+}
+
+export function undoLastMove(state: DotsState, count = 1) {
+  while (count-- > 0 && state.history.length) state.history.pop();
+  recomputeFromHistory(state);
+  state.revision++;
+}
+
