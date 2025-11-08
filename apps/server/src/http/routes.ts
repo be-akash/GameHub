@@ -128,5 +128,30 @@ export async function registerRoutes(app: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
+  app.post("/rooms/:id/announce-rematch", async (req, reply) => {
+    const { id } = req.params as any; // old room id
+    const { newRoomId, bestOf, wins } = (req.body ?? {}) as {
+      newRoomId: string;
+      bestOf?: 1 | 3 | 5;
+      wins?: Record<string, number>;
+    };
+
+    if (!newRoomId) return reply.code(400).send({ error: "newRoomId required" });
+
+    const io = (app as any).io || ioRef;
+    if (!io) return reply.code(500).send({ error: "Socket server not ready" });
+
+    // Broadcast to everyone in the old room so both tabs can jump together
+    io.to(id).emit("series.rematch", {
+      roomId: newRoomId,
+      bestOf: bestOf ?? 1,
+      wins: wins ?? {},
+      at: Date.now(),
+    });
+
+    return reply.send({ ok: true });
+  });
+
+
 
 }

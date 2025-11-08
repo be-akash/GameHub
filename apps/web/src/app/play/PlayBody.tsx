@@ -15,19 +15,32 @@ function WinnerModal({
   open,
   scores,
   colors,
+  series,
+  players,
+  bestOf,
+  setBestOf,
+  onRematch,
   onClose,
 }: {
   open: boolean;
   scores: Record<string, number>;
   colors: Record<string, string>;
+  series: { targetWins: number; wins: Record<string, number> } | null;
+  players: string[];
+  bestOf: 1 | 3 | 5;
+  setBestOf: (v: 1 | 3 | 5) => void;
+  onRematch: (bestOf: 1 | 3 | 5) => void;
   onClose: () => void;
 }) {
+
   if (!open) return null;
   const entries = Object.entries(scores || {});
   const sorted = entries.sort((a, b) => (b[1] as number) - (a[1] as number));
   const top = sorted[0];
   const winner = top?.[0] ?? "n/a";
   const maxScore = top?.[1] ?? 0;
+  // const [bestOf, setBestOf] = useState<1 | 3 | 5>((series?.targetWins === 3 ? 5 : series?.targetWins === 2 ? 3 : 1) as 1 | 3 | 5);
+  const seriesWins = series?.wins || {};
 
   return (
     <div
@@ -54,6 +67,7 @@ function WinnerModal({
         }}
       >
         <h2 style={{ margin: 0, marginBottom: 12 }}>🏆 Game Over</h2>
+
         <div style={{ marginBottom: 8 }}>
           <strong>Winner: </strong>
           <span style={{ color: colors[winner] || "#fff" }}>{winner}</span> &nbsp;({maxScore})
@@ -62,7 +76,7 @@ function WinnerModal({
         <div style={{ marginTop: 10, background: "#101738", padding: 10, borderRadius: 10 }}>
           <div style={{ marginBottom: 6, opacity: 0.85 }}>Final scores</div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            {sorted.map(([p, s]) => (
+            {Object.entries(scores || {}).map(([p, s]) => (
               <div
                 key={p}
                 style={{
@@ -79,9 +93,53 @@ function WinnerModal({
           </div>
         </div>
 
+        {/* Series block */}
+        <div style={{ marginTop: 12, background: "#0e1530", padding: 10, borderRadius: 10, border: "1px solid #24306b" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <strong>Series:</strong>{" "}
+              <span style={{ opacity: 0.85 }}>
+                {bestOf === 1 ? "Best of 1" : bestOf === 3 ? "Best of 3" : "Best of 5"}
+              </span>
+            </div>
+            <div>
+              <label style={{ marginRight: 6, opacity: 0.8 }}>Set best of:</label>
+              <select
+                value={bestOf}
+                onChange={(e) => setBestOf(Number(e.target.value) as 1 | 3 | 5)}
+                style={{ background: "#0b1020", color: "white", border: "1px solid #24306b", borderRadius: 8, padding: "6px 8px" }}
+              >
+                <option value={1}>Best of 1</option>
+                <option value={3}>Best of 3</option>
+                <option value={5}>Best of 5</option>
+              </select>
+            </div>
+          </div>
+
+          {players?.length >= 2 && (
+            <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", opacity: 0.9 }}>
+              {players.map((p) => (
+                <div
+                  key={p}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 8,
+                    background: "#0b1020",
+                    border: "1px solid #1c2a59",
+                    color: colors[p] || "#fff",
+                  }}
+                >
+                  {p}: {seriesWins[p] ?? 0}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+          <button style={{ padding: "8px 12px" }} onClick={() => onRematch(bestOf)}>Rematch</button>
           <a href="/create" style={{ textDecoration: "none" }}>
-            <button style={{ padding: "8px 12px" }}>Play again</button>
+            <button style={{ padding: "8px 12px" }}>New Room</button>
           </a>
           <button
             onClick={onClose}
@@ -91,6 +149,7 @@ function WinnerModal({
           </button>
         </div>
       </div>
+
     </div>
   );
 }
@@ -110,7 +169,19 @@ export default function PlayBody() {
   const [joined, setJoined] = useState(false);
 
   const [colors, setColors] = useState<Record<string, string>>({});
+  const [series, setSeries] = useState<{ targetWins: number; wins: Record<string, number> } | null>(null);
   const [toast, setToast] = useState<{ show: boolean; msg: string }>({ show: false, msg: "" });
+
+  const [bestOf, setBestOf] = useState<1 | 3 | 5>(1);
+
+  // Keep bestOf in sync with any series we load from the server
+  useEffect(() => {
+    if (!series) { setBestOf(1); return; }
+    // server stores targetWins (1,2,3) == wins needed; map to best-of (1,3,5)
+    const bo = series.targetWins === 3 ? 5 : series.targetWins === 2 ? 3 : 1;
+    setBestOf(bo as 1 | 3 | 5);
+  }, [series]);
+
   const [isSending, setIsSending] = useState(false);
 
   // Chat
@@ -239,6 +310,72 @@ export default function PlayBody() {
     return `${r},${c}`;
   }
 
+  async function handleRematch(bestOf: 1 | 3 | 5) {
+    if (!state) return;
+    try {
+      // figure out winner from this finished game
+      const entries = Object.entries(state.scores || {});
+      const winner = entries.sort((a, b) => (b[1] as number) - (a[1] as number))?.[0]?.[0];
+
+      const targetWins = bestOf === 5 ? 3 : bestOf === 3 ? 2 : 1;
+      const prevWins = series?.wins || {};
+      const wins: Record<string, number> = { ...prevWins };
+
+      if (winner) wins[winner] = (wins[winner] || 0) + 1;
+
+      // carry players/colors/owner/chatEnabled over
+      const body = {
+        gameId: "dots-and-boxes",
+        rows: state.rows,
+        cols: state.cols,
+        players: state.players || ["p1", "p2"],
+        owner,
+        meta: {
+          colors,
+          chatEnabled,
+          locked: false,
+          series: { targetWins, wins },
+        },
+      };
+
+      const res = await fetch(`${API_URL}/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!data?.roomId) {
+        setToast({ show: true, msg: "Rematch failed" });
+        return;
+      }
+
+      const newRoomId = data.roomId;
+
+      // Tell everyone in the old room to hop to the new one
+      try {
+        await fetch(`${API_URL}/rooms/${roomId}/announce-rematch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            newRoomId,
+            bestOf,
+            wins, // we just computed this above
+          }),
+        });
+      } catch {
+        // non-fatal; we still navigate ourselves
+      }
+
+      // Now join locally and update our URL
+      joinRoom(newRoomId, playerId, { pushUrl: false });
+      router.replace(`/play?room=${newRoomId}&as=${encodeURIComponent(playerId)}`);
+    } catch (e) {
+      setToast({ show: true, msg: "Rematch failed" });
+    }
+  }
+
+
+
 
   useEffect(() => {
     if (initialRoom && initialAs && !joined) {
@@ -321,17 +458,27 @@ export default function PlayBody() {
     try {
       const res = await fetch(`${API_URL}/rooms/${id}`);
       const data = await res.json();
+
       if (data?.meta?.colors && typeof data.meta.colors === "object") setColors(data.meta.colors);
       if (typeof data?.meta?.chatEnabled === "boolean") {
         setChatEnabled(data.meta.chatEnabled);
-        setChatPanelVisible(data.meta.chatEnabled); // default local toggle from server setting
+        setChatPanelVisible(data.meta.chatEnabled);
       }
       if (typeof data?.meta?.locked === "boolean") setLocked(data.meta.locked);
       if (typeof data?.meta?.owner === "string") setOwner(data.meta.owner);
+
+      // NEW: carry series if present
+      if (data?.meta?.series && typeof data.meta.series === "object") {
+        const s = data.meta.series;
+        if (typeof s.targetWins === "number" && typeof s.wins === "object") {
+          setSeries({ targetWins: s.targetWins, wins: { ...s.wins } });
+        }
+      }
     } catch {
       /* ignore */
     }
   }
+
 
   function setupSocketListeners(s: Socket) {
     s.removeAllListeners("game.state");
@@ -344,6 +491,7 @@ export default function PlayBody() {
     s.removeAllListeners("room.kicked");
     s.removeAllListeners("undo.request");
     s.removeAllListeners("undo.result");
+    s.removeAllListeners("series.rematch");
 
 
     s.on("game.state", (st) => {
@@ -450,6 +598,15 @@ export default function PlayBody() {
       // Save snapshot for next diff
       prevStateRef.current = st;
     });
+
+    s.on("series.rematch", (payload: { roomId: string; bestOf?: 1 | 3 | 5; wins?: Record<string, number> }) => {
+      const newId = payload?.roomId;
+      if (!newId) return;
+      // Join as the same player name and update URL
+      joinRoom(newId, playerId, { pushUrl: false });
+      router.replace(`/play?room=${newId}&as=${encodeURIComponent(playerId)}`);
+    });
+
 
 
     s.on("game.events", (ev: any[]) => {
@@ -960,8 +1117,14 @@ export default function PlayBody() {
                 open={!!state.finished}
                 scores={state.scores || {}}
                 colors={colors}
-                onClose={() => { }}
+                series={series}
+                players={state.players || []}
+                bestOf={bestOf}
+                setBestOf={(v) => setBestOf(v)}
+                onRematch={handleRematch}
+                onClose={() => { router.replace("/create"); }}
               />
+
             </div>
 
             {/* RIGHT: Chat (~20%) — visible only if server enabled AND user toggled on */}
